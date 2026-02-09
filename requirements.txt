@@ -1,0 +1,25 @@
+# Nongor Bot V3 Dependencies
+# Python 3.8+ required
+
+# Telegram Bot Framework
+python-telegram-bot==21.0
+
+# Google Gemini AI
+google-generativeai==0.3.2
+
+# PostgreSQL Driver
+pg8000==1.30.3
+
+# Web Scraping
+requests==2.31.0
+beautifulsoup4==4.12.2
+
+# Environment Configuration
+python-dotenv==1.0.0
+
+# Async Support (included in python-telegram-bot)
+# asyncio is built-in
+
+# Logging (built-in)
+# datetime (built-in)
+# re (built-in)
