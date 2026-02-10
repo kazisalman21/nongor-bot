@@ -96,11 +96,9 @@ async def get_database_context() -> str:
         for i, p in enumerate(top_products, 1):
             top_text += f"{i}. {p['product_name']}: {p['order_count']} orders, ৳{p['revenue']:,.0f}\n"
         
-        # Get low stock alerts
+        # Low stock alerts (no products table)
         low_stock = db.get_low_stock_items(threshold=10)
-        low_stock_text = "\nLOW STOCK ALERTS:\n" if low_stock else ""
-        for item in low_stock[:5]:
-            low_stock_text += f"⚠️ {item['name']}: Only {item['stock_quantity']} left\n"
+        low_stock_text = ""
         
         # Combine context
         context = f"""
@@ -395,10 +393,10 @@ async def format_order_details(order: Dict) -> str:
 ═══════════════════════════════
 🆔 **Order ID:** #{order.get('order_id', order.get('id', 'N/A'))}
 👤 **Customer:** {order.get('customer_name', 'N/A')}
-📱 **Phone:** {order.get('customer_phone', 'N/A')}
+📱 **Phone:** {order.get('phone', 'N/A')}
 
 💰 **PAYMENT:**
-• Total: ৳{order.get('total', 0):,.2f}
+• Total: ৳{(order.get('total') or order.get('total_price') or 0):,.2f}
 • Payment: {payment_emoji} {payment_status.upper()}
 • Method: {order.get('payment_method', 'N/A').upper()}
 
@@ -463,9 +461,9 @@ async def search_products_for_ai(query: str) -> str:
     text = f"📦 **Products matching '{query}':**\n\n"
     
     for p in products[:5]:
-        stock_status = "✅ In Stock" if p['stock_quantity'] > 10 else f"⚠️ Only {p['stock_quantity']} left"
+        order_count = p.get('order_count', 0)
         text += f"• **{p['name']}**\n"
-        text += f"  💰 ৳{p['price']:,.0f} | {stock_status}\n\n"
+        text += f"  💰 ৳{p['price']:,.0f} | {order_count} orders\n\n"
     
     return text
 

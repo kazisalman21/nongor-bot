@@ -142,23 +142,10 @@ class Database:
     def get_order_by_id(self, order_id: int) -> Optional[Dict]:
         """Get specific order by ID"""
         query = """
-            SELECT 
-                o.*,
-                COALESCE(
-                    json_agg(
-                        json_build_object(
-                            'product_name', oi.product_name,
-                            'size', oi.size,
-                            'quantity', oi.quantity,
-                            'price', oi.price
-                        )
-                    ) FILTER (WHERE oi.id IS NOT NULL),
-                    '[]'::json
-                ) as items
+            SELECT *
             FROM orders o
-            LEFT JOIN order_items oi ON o.order_id = oi.order_id
             WHERE o.order_id = %s OR o.id = %s
-            GROUP BY o.id
+            LIMIT 1
         """
         return self.fetch_one(query, (str(order_id), order_id))
     
@@ -172,7 +159,7 @@ class Database:
         query = """
             SELECT *
             FROM orders 
-            WHERE customer_phone LIKE %s
+            WHERE phone LIKE %s
             ORDER BY created_at DESC 
             LIMIT 1
         """
@@ -187,7 +174,7 @@ class Database:
         query = """
             SELECT *
             FROM orders 
-            WHERE customer_phone LIKE %s
+            WHERE phone LIKE %s
             ORDER BY created_at DESC
             LIMIT %s
         """
@@ -197,8 +184,8 @@ class Database:
         """Get most recent orders"""
         query = """
             SELECT 
-                order_id, customer_name, customer_phone,
-                total, status, payment_status, payment_method,
+                order_id, customer_name, phone,
+                COALESCE(NULLIF(total, 0), total_price, 0) as total, status, payment_status, payment_method,
                 created_at
             FROM orders 
             ORDER BY created_at DESC 
@@ -232,77 +219,64 @@ class Database:
     # =========================================
     
     def get_available_products(self) -> List[Dict]:
-        """Get all in-stock products"""
+        """Get available products derived from orders"""
         query = """
             SELECT 
-                id, name, price, stock_quantity, category,
-                CASE 
-                    WHEN stock_quantity = 0 THEN 'out_of_stock'
-                    WHEN stock_quantity < 10 THEN 'low_stock'
-                    ELSE 'in_stock'
-                END as availability
-            FROM products 
-            WHERE is_active = true
-            ORDER BY name
+                product_name as name, 
+                MAX(COALESCE(price, total_price / NULLIF(quantity, 0), total_price, 0)) as price,
+                COUNT(*) as order_count,
+                'in_stock' as availability
+            FROM orders
+            WHERE product_name IS NOT NULL AND product_name != ''
+            GROUP BY product_name
+            ORDER BY product_name
         """
         return self.fetch_all(query)
     
     def get_product_by_id(self, product_id: int) -> Optional[Dict]:
-        """Get product by ID"""
+        """Get product by ID (from orders)"""
         query = """
-            SELECT *
-            FROM products 
+            SELECT id, product_name as name, price, size, quantity
+            FROM orders 
             WHERE id = %s
         """
         return self.fetch_one(query, (product_id,))
     
     def search_products(self, search_term: str) -> List[Dict]:
-        """Search products by name or category"""
-        query = """
-            SELECT id, name, description, price, stock_quantity, category
-            FROM products 
-            WHERE (name ILIKE %s OR category ILIKE %s)
-            AND is_active = true
-            AND stock_quantity > 0
-            ORDER BY stock_quantity DESC
-        """
-        pattern = f"%{search_term}%"
-        return self.fetch_all(query, (pattern, pattern))
-    
-    def get_low_stock_items(self, threshold: int = 10) -> List[Dict]:
-        """Get products with low stock"""
-        query = """
-            SELECT id, name, stock_quantity, price
-            FROM products 
-            WHERE stock_quantity > 0 
-            AND stock_quantity <= %s
-            AND is_active = true
-            ORDER BY stock_quantity ASC
-        """
-        return self.fetch_all(query, (threshold,))
-    
-    def get_out_of_stock_items(self) -> List[Dict]:
-        """Get out of stock products"""
-        query = """
-            SELECT id, name, price
-            FROM products 
-            WHERE stock_quantity = 0
-            AND is_active = true
-            ORDER BY name
-        """
-        return self.fetch_all(query)
-    
-    def get_total_inventory(self) -> Dict:
-        """Get total inventory overview"""
+        """Search products by name"""
         query = """
             SELECT 
-                COUNT(*) as total_products,
-                COALESCE(SUM(stock_quantity), 0) as total_units,
-                COUNT(CASE WHEN stock_quantity = 0 THEN 1 END) as out_of_stock,
-                COUNT(CASE WHEN stock_quantity > 0 AND stock_quantity <= 10 THEN 1 END) as low_stock,
-                COUNT(CASE WHEN stock_quantity > 10 THEN 1 END) as well_stocked
-            FROM products
-            WHERE is_active = true
+                product_name as name, 
+                MAX(price) as price,
+                COUNT(*) as order_count
+            FROM orders 
+            WHERE product_name ILIKE %s
+            AND product_name IS NOT NULL
+            GROUP BY product_name
+            ORDER BY order_count DESC
+        """
+        pattern = f"%{search_term}%"
+        return self.fetch_all(query, (pattern,))
+    
+    def get_low_stock_items(self, threshold: int = 10) -> List[Dict]:
+        """No dedicated products table - returns empty list"""
+        return []
+    
+    def get_out_of_stock_items(self) -> List[Dict]:
+        """No dedicated products table - returns empty list"""
+        return []
+    
+    def get_total_inventory(self) -> Dict:
+        """Get inventory overview derived from orders"""
+        query = """
+            SELECT 
+                COUNT(DISTINCT product_name) as total_products,
+                COALESCE(SUM(quantity), 0) as total_units,
+                0 as out_of_stock,
+                0 as low_stock,
+                COUNT(DISTINCT product_name) as well_stocked
+            FROM orders
+            WHERE product_name IS NOT NULL
         """
         return self.fetch_one(query) or {}
     
@@ -315,10 +289,11 @@ class Database:
         query = """
             SELECT 
                 COUNT(*) as order_count,
-                COALESCE(SUM(total), 0) as total_revenue,
-                COALESCE(AVG(total), 0) as avg_order_value
+                COALESCE(SUM(COALESCE(NULLIF(total, 0), total_price, 0)), 0) as total_revenue,
+                COALESCE(AVG(COALESCE(NULLIF(total, 0), total_price, 0)), 0) as avg_order_value
             FROM orders 
             WHERE DATE(created_at) = CURRENT_DATE
+            AND status != 'cancelled'
         """
         return self.fetch_one(query) or {'order_count': 0, 'total_revenue': 0, 'avg_order_value': 0}
     
@@ -327,10 +302,11 @@ class Database:
         query = """
             SELECT 
                 COUNT(*) as order_count,
-                COALESCE(SUM(total), 0) as total_revenue,
-                COALESCE(AVG(total), 0) as avg_order_value
+                COALESCE(SUM(COALESCE(NULLIF(total, 0), total_price, 0)), 0) as total_revenue,
+                COALESCE(AVG(COALESCE(NULLIF(total, 0), total_price, 0)), 0) as avg_order_value
             FROM orders 
-            WHERE created_at >= NOW() - INTERVAL '7 days'
+            WHERE created_at >= NOW() - (INTERVAL '1 day' * 7)
+            AND status != 'cancelled'
         """
         return self.fetch_one(query) or {'order_count': 0, 'total_revenue': 0, 'avg_order_value': 0}
     
@@ -339,10 +315,11 @@ class Database:
         query = """
             SELECT 
                 COUNT(*) as order_count,
-                COALESCE(SUM(total), 0) as total_revenue,
-                COALESCE(AVG(total), 0) as avg_order_value
+                COALESCE(SUM(COALESCE(NULLIF(total, 0), total_price, 0)), 0) as total_revenue,
+                COALESCE(AVG(COALESCE(NULLIF(total, 0), total_price, 0)), 0) as avg_order_value
             FROM orders 
             WHERE created_at >= DATE_TRUNC('month', CURRENT_DATE)
+            AND status != 'cancelled'
         """
         return self.fetch_one(query) or {'order_count': 0, 'total_revenue': 0, 'avg_order_value': 0}
     
@@ -350,14 +327,15 @@ class Database:
         """Get top selling products by revenue"""
         query = """
             SELECT 
-                oi.product_name, 
-                COALESCE(SUM(oi.price * oi.quantity), 0) as revenue,
-                COUNT(DISTINCT o.id) as order_count,
-                COALESCE(SUM(oi.quantity), 0) as units_sold
-            FROM order_items oi
-            JOIN orders o ON oi.order_id = o.order_id
-            WHERE o.created_at >= NOW() - INTERVAL '%s days'
-            GROUP BY oi.product_name 
+                product_name, 
+                COALESCE(SUM(COALESCE(price * quantity, total_price, total, 0)), 0) as revenue,
+                COUNT(*) as order_count,
+                COALESCE(SUM(quantity), 0) as units_sold
+            FROM orders
+            WHERE created_at >= NOW() - (INTERVAL '1 day' * %s)
+            AND status != 'cancelled'
+            AND product_name IS NOT NULL
+            GROUP BY product_name 
             ORDER BY revenue DESC 
             LIMIT %s
         """
@@ -369,9 +347,10 @@ class Database:
             SELECT 
                 DATE(created_at) as date,
                 COUNT(*) as order_count,
-                COALESCE(SUM(total), 0) as revenue
+                COALESCE(SUM(COALESCE(NULLIF(total, 0), total_price, 0)), 0) as revenue
             FROM orders
-            WHERE created_at >= NOW() - INTERVAL '%s days'
+            WHERE created_at >= NOW() - (INTERVAL '1 day' * %s)
+            AND status != 'cancelled'
             GROUP BY DATE(created_at)
             ORDER BY date DESC
         """
@@ -384,9 +363,9 @@ class Database:
     def get_unique_customers(self, days: int = 30) -> int:
         """Get count of unique customers"""
         query = """
-            SELECT COUNT(DISTINCT customer_phone) as count
+            SELECT COUNT(DISTINCT phone) as count
             FROM orders
-            WHERE created_at >= NOW() - INTERVAL '%s days'
+            WHERE created_at >= NOW() - (INTERVAL '1 day' * %s)
         """
         result = self.fetch_one(query, (days,))
         return result['count'] if result else 0
@@ -396,10 +375,10 @@ class Database:
         query = """
             SELECT COUNT(*) as count
             FROM (
-                SELECT customer_phone
+                SELECT phone
                 FROM orders
-                WHERE created_at >= NOW() - INTERVAL '%s days'
-                GROUP BY customer_phone
+                WHERE created_at >= NOW() - (INTERVAL '1 day' * %s)
+                GROUP BY phone
                 HAVING COUNT(*) > 1
             ) repeat
         """
@@ -416,9 +395,8 @@ class Database:
         
         lines = ["AVAILABLE PRODUCTS:"]
         for p in products:
-            stock_emoji = "✅" if p['availability'] == 'in_stock' else "⚠️" if p['availability'] == 'low_stock' else "❌"
-            stock_text = f"{p['stock_quantity']} units" if p['stock_quantity'] > 0 else "Out of Stock"
-            lines.append(f"- {p['name']}: {stock_emoji} {stock_text}, ৳{p['price']}")
+            price = p.get('price', 0) or 0
+            lines.append(f"- {p['name']}: ৳{price:,.2f}, {p.get('order_count', 0)} orders")
         
         return "\n".join(lines)
     

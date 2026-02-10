@@ -1,0 +1,3 @@
+Order Statuses:
+- Delivered
+- Cancelled
