@@ -1,103 +1,92 @@
 """
-Neon Serverless PostgreSQL Adapter for Cloudflare Workers
-Uses Neon's HTTP API via their serverless endpoint
+AsyncPostgreSQL Database Adapter using asyncpg
+Direct connection to Neon/Postgres
 """
-from js import fetch
-import json
+import asyncpg
 import logging
+import re
+from urllib.parse import urlparse
 
 logger = logging.getLogger(__name__)
 
 class Database:
     """
-    Neon serverless database adapter using HTTP fetch.
-    Connection string format: postgres://user:pass@host/dbname
+    AsyncPostgreSQL database adapter.
     """
     
     def __init__(self, connection_string):
-        """
-        Parse Neon connection string and prepare for serverless queries.
-        Format: postgres://user:password@ep-xxx.region.aws.neon.tech/dbname
-        """
-        # Parse connection string
-        import re
-        match = re.match(r'postgres://([^:]+):([^@]+)@([^/]+)/(.+)', connection_string)
-        
-        if not match:
-            raise ValueError("Invalid Neon connection string format")
-        
-        user, password, host, database = match.groups()
-        
-        # Neon HTTP endpoint format
-        self.endpoint = f"https://{host}"
-        self.auth_header = self._create_auth_header(user, password)
-        self.database = database
-        self.user = user
+        self.connection_string = connection_string
+        self.pool = None
 
-    def _create_auth_header(self, user, password):
-        """Create basic auth header for Neon HTTP requests"""
-        import base64
-        credentials = f"{user}:{password}"
-        encoded = base64.b64encode(credentials.encode()).decode()
-        return f"Basic {encoded}"
+    async def connect(self):
+        """Initialize connection pool"""
+        if not self.pool:
+            try:
+                # SSL is required for Neon
+                import ssl
+                ctx = ssl.create_default_context()
+                ctx.check_hostname = False
+                ctx.verify_mode = ssl.CERT_NONE
+                
+                self.pool = await asyncpg.create_pool(
+                    self.connection_string,
+                    min_size=1,
+                    max_size=5,
+                    ssl=ctx
+                )
+                logger.info("Database connection pool established.")
+            except Exception as e:
+                logger.error(f"Failed to connect to database: {e}")
+                raise e
 
-    async def _execute(self, query, params=None):
-        """Execute SQL query using Neon's HTTP endpoint."""
-        
-        # Format parameters for PostgreSQL
-        formatted_query = query
-        if params:
-            for i, param in enumerate(params, 1):
-                placeholder = f"${i}"
-                if isinstance(param, str):
-                    value = f"'{param}'"
-                elif param is None:
-                    value = "NULL"
-                else:
-                    value = str(param)
-                formatted_query = formatted_query.replace(placeholder, value, 1)
-        
-        try:
-            response = await fetch(f"{self.endpoint}/sql", {
-                "method": "POST",
-                "headers": {
-                    "Authorization": self.auth_header,
-                    "Content-Type": "application/json",
-                    "Neon-Connection-String": f"postgres://{self.user}@{self.endpoint.replace('https://', '')}/{self.database}"
-                },
-                "body": json.dumps({
-                    "query": formatted_query,
-                    "arrayMode": False
-                })
-            })
-            
-            if response.status != 200:
-                logger.error(f"Database error: HTTP {response.status}")
-                return None
-            
-            data = await response.json()
-            
-            # Format response
-            if "rows" in data:
-                return data["rows"]
-            
-            return data
-            
-        except Exception as e:
-            logger.error(f"Database execution error: {e}")
-            return None
+    async def close(self):
+        """Close connection pool"""
+        if self.pool:
+            await self.pool.close()
+            logger.info("Database connection pool closed.")
 
     async def fetch_one(self, query, params=None):
         """Fetch single row"""
-        results = await self._execute(query, params)
-        if results and isinstance(results, list) and len(results) > 0:
-            return results[0]
-        return None
+        if not self.pool: await self.connect()
+        try:
+            async with self.pool.acquire() as connection:
+                # asyncpg uses $1, $2, etc. natively
+                if params:
+                    row = await connection.fetchrow(query, *params)
+                else:
+                    row = await connection.fetchrow(query)
+                return row
+        except Exception as e:
+            logger.error(f"DB Error (fetch_one): {e}")
+            return None
 
     async def fetch_all(self, query, params=None):
         """Fetch all rows"""
-        results = await self._execute(query, params)
-        return results if isinstance(results, list) else []
+        if not self.pool: await self.connect()
+        try:
+            async with self.pool.acquire() as connection:
+                if params:
+                    rows = await connection.fetch(query, *params)
+                else:
+                    rows = await connection.fetch(query)
+                return rows
+        except Exception as e:
+            logger.error(f"DB Error (fetch_all): {e}")
+            return []
+
+    async def execute(self, query, params=None):
+        """Execute a query (INSERT/UPDATE/DELETE)"""
+        if not self.pool: await self.connect()
+        try:
+            async with self.pool.acquire() as connection:
+                if params:
+                    result = await connection.execute(query, *params)
+                else:
+                    result = await connection.execute(query)
+                return result
+        except Exception as e:
+            logger.error(f"DB Error (execute): {e}")
+            return None
 
     # =========================================
     # BUSINESS LOGIC METHODS
@@ -163,7 +152,7 @@ class Database:
             ORDER BY revenue DESC 
             LIMIT $2
         """
-        return await self.fetch_all(query, [days, limit])
+        return await self.fetch_all(query, [str(days), limit]) # Casting days to str for concatenation in SQL if needed, but parameter is $1
 
     async def get_recent_orders(self, limit=15):
         query = "SELECT id as order_id, customer_name, phone, product_name, total, status, created_at FROM orders ORDER BY created_at DESC LIMIT $1"
@@ -189,7 +178,7 @@ class Database:
             ON CONFLICT (user_id) 
             DO UPDATE SET username = $2, first_name = $3, last_seen = CURRENT_TIMESTAMP
         """
-        return await self._execute(query, [user_id, username, first_name])
+        return await self.execute(query, [user_id, username, first_name])
 
     async def get_user_stats(self):
         """Get total and active user counts"""
@@ -201,3 +190,28 @@ class Database:
         """
         res = await self.fetch_one(query)
         return res if res else {'total_users': 0, 'active_users': 0}
+
+    async def get_all_orders(self):
+        """Fetch all orders for CSV export"""
+        query = "SELECT id as order_id, customer_name, phone, product_name, total, status, created_at FROM orders ORDER BY created_at DESC"
+        return await self.fetch_all(query)
+
+    async def get_latest_order_id(self):
+        """Get the ID of the most recent order"""
+        query = "SELECT id FROM orders ORDER BY id DESC LIMIT 1"
+        res = await self.fetch_one(query)
+        return res['id'] if res else 0
+
+    async def get_daily_sales_stats(self, days=7):
+        """Get daily sales totals for charts"""
+        query = """
+            SELECT 
+                TO_CHAR(created_at, 'YYYY-MM-DD') as date,
+                COALESCE(SUM(COALESCE(total, total_price, 0)), 0) as revenue
+            FROM orders
+            WHERE created_at >= CURRENT_DATE - ($1 || ' days')::INTERVAL
+            AND status != 'cancelled'
+            GROUP BY date
+            ORDER BY date ASC
+        """
+        return await self.fetch_all(query, [str(days)])

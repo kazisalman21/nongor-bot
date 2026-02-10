@@ -1,0 +1,17 @@
+# flyctl launch added from .gitignore
+**\.env
+**\__pycache__
+**\*.pyc
+**\bot.log
+**\temp_bot_repo
+
+# flyctl launch added from venv\.gitignore
+# Created by venv; see https://docs.python.org/3/library/venv.html
+venv\**\*
+
+# flyctl launch added from workers\bot\.venv\.gitignore
+workers\bot\.venv\**\*
+
+# flyctl launch added from workers\bot\.venv-workers\.gitignore
+workers\bot\.venv-workers\**\*
+fly.toml

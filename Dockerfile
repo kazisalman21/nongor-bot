@@ -16,4 +16,4 @@ COPY . .
 
 # Environment variables will be set via Fly secrets
 # Command to run the bot (polling mode)
-CMD ["python", "bot_v3_enhanced.py"]
+CMD ["python", "bot_standard/main.py"]

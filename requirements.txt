@@ -1,0 +1,6 @@
+python-telegram-bot
+google-generativeai>=0.7.0
+httpx
+python-dotenv
+asyncpg
+matplotlib
