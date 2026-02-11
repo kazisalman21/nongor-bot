@@ -18,6 +18,9 @@
 </div>
 
 ---
+## 🎮 Live Demo
+
+**Try it yourself:** [@Eikta_bot](https://t.me/Eikta_bot)
 
 ## 🌟 What makes this "Premium"?
 
@@ -148,8 +151,8 @@ This creates:
 Fill in your credentials in `.env`:
 ```ini
 TELEGRAM_BOT_TOKEN=123456:ABC-DEF...
-ADMIN_USER_IDS=987654321,123456789  # These become Super Admins (can't be removed)
-GEMINI_API_KEY=AIzaSy...
+ADMIN_USER_IDS=......,.....  # These become Super Admins (can't be removed)
+GEMINI_API_KEY=........
 DATABASE_URL=postgresql://user:pass@ep-xyz.region.neon.tech/neondb?sslmode=require
 WEBSITE_URL=https://your-website.com
 ```
