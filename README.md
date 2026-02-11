@@ -1,111 +1,151 @@
-# Nongor Premium Bot v3.0 (2026 Edition)
+# 🚢 Nongor Premium Bot v4.0 (AI-Powered)
 
 <div align="center">
 
-[![Python](https://img.shields.io/badge/Python-3.11+-blue?style=for-the-badge&logo=python&logoColor=white)](https://python.org)
-[![Telegram](https://img.shields.io/badge/Telegram-Bot-2CA5E0?style=for-the-badge&logo=telegram&logoColor=white)](https://core.telegram.org/bots)
-[![Gemini 1.5](https://img.shields.io/badge/Gemini-1.5_Flash-8E75B2?style=for-the-badge&logo=google&logoColor=white)](https://ai.google.dev)
-[![PostgreSQL](https://img.shields.io/badge/PostgreSQL-Neon-336791?style=for-the-badge&logo=postgresql&logoColor=white)](https://neon.tech)
-[![Fly.io](https://img.shields.io/badge/Deployed_on-Fly.io-24185B?style=for-the-badge&logo=flydotio&logoColor=white)](https://fly.io)
+![Nongor Bot Banner](https://img.shields.io/badge/Nongor-Premium_Bot-2CA5E0?style=for-the-badge&logo=probot&logoColor=white)
+![Status](https://img.shields.io/badge/Status-Active-success?style=for-the-badge)
+![AI](https://img.shields.io/badge/AI-Gemini_2.5_Flash-8E75B2?style=for-the-badge&logo=google&logoColor=white)
+![Database](https://img.shields.io/badge/DB-PostgreSQL_Neon-336791?style=for-the-badge&logo=postgresql&logoColor=white)
 
-**The Ultimate E-commerce Management Bot for Telegram**
-*Admin Dashboard • AI Shopping Assistant • Real-Time Analytics*
+**The Ultimate Intelligence System for E-commerce**
+*Dual-Persona AI • Strategic Business Analyst • Sales Conversion Expert*
+
+[🚀 Deploy to Fly.io](#-deployment-flyio) • [📚 Admin Guide](#-admin-manual) • [🤖 AI Features](#-ai-intelligence-system)
 
 </div>
 
 ---
 
-## 🌟 Premium Features (v3.0)
+## 🌟 What makes this "Premium"?
 
-### 👑 Admin Control Center
-- **📊 Live Dashboard**: Real-time sales, order counts, and revenue tracking.
-- **📈 Visual Analytics**: Generate weekly sales charts directly in chat.
-- **🚨 Instant Alerts**: Get notified within 60 seconds of new orders.
-- **📦 Order Management**: View recent orders with customer details and status.
-- **📤 Data Export**: Download full order history as CSV for Excel/Sheets.
-- **📉 Inventory Tracking**: Monitor stock levels and get low-stock warnings.
+This is not just a chatbot; it's a **full-staff replacement** operating 24/7.
 
-### 🤖 AI Powerhouse
-- **RAG-Enabled**: The AI knows your *live* inventory and *current* policies.
-- **Smart Recommendations**: Suggests products based on user queries.
-- **Context Aware**: Remembers conversation history for natural support.
-- **Role-Based**: Acts as a helpful assistant to customers, but a business analyst to admins.
+### 🧠 Dual-Persona AI Core
+The bot runs two distinct AI personalities simultaneously, ensuring the right tone for the right user:
 
-### ⚡ Technology Stack
-- **Core**: Python 3.11 + `python-telegram-bot` (Async)
-- **Database**: PostgreSQL (Neon) via high-performance `asyncpg` driver.
-- **AI**: Google Gemini 1.5 Flash (Latest).
-- **Visualization**: `matplotlib` for dynamic chart generation.
-- **Deployment**: Dockerized on Fly.io (Firecracker MicroVMs).
+| Feature | 🛍️ **Customer AI (Sales Manager)** | 💼 **Admin AI (Senior Business Manager)** |
+| :--- | :--- | :--- |
+| **Persona** | Warm, Energetic, Consultative "Fashion Consultant" | Critical, Data-Driven, Strategic "Executive Advisor" |
+| **Goal** | **Drive Sales & Conversion** | **Analyze Profit & Optimize Operations** |
+| **Knowledge** | Knows strictly `knowledge_base.md` (Shipping/Returns) | Connects **LIVE** to Database (Revenue, Stock, Orders) |
+| **Behavior** | Create urgency, suggest matching items, always close deals | Warns about low stock, identifies top sellers, suggests marketing |
+| **Safety** | **Zero Hallucination** on policies (Strict Adherence) | **Full Privacy** (Only speaks to Admin IDs) |
 
----
+### 📊 Real-Time Business Dashboard
+Forget spreadsheets. Ask the Admin AI _"How is business today?"_ and get:
+- **Revenue Snapshot**: Today vs. Last Week vs. Last Month.
+- **Inventory Alerts**: ⚠️ Warnings for low-stock items that are selling fast.
+- **Top Performers**: ⭐ Which products are driving your revenue exactly.
+- **Category Analysis**: 📈 Which collection (Panjabi, Saree, etc.) is trending.
 
 ---
 
-## 🏗️ Architecture
+## 🏗️ Technical Architecture
 
-nongor_bot_v3/
-├── bot_standard/
-│   ├── main.py             # Main bot application
-│   ├── database.py         # Asyncpg database layer
-│   └── system_prompt.py    # AI system prompt
-│
-├── requirements.txt        # Dependencies
-├── Dockerfile              # Docker configuration
-├── fly.toml                # Fly.io configuration
-├── .env.example            # Config template
-└── README_V3.md            # This file
+This project is built for **scale** and **reliability**.
+
+```mermaid
+graph TD
+    User[User/Customer] -->|Telegram| Bot[Nongor Bot v4]
+    Admin[Admin Owner] -->|Telegram| Bot
+    
+    subgraph "Core Intelligence"
+        Bot -->|Route: Customer| SalesAI[Lead Sales AI]
+        Bot -->|Route: Admin| BizAI[Senior Business AI]
+    end
+    
+    subgraph "Data Layer"
+        SalesAI -- Read Only --> KB[Knowledge Base.md]
+        BizAI -- Read/Write --> DB[(PostgreSQL Neon)]
+        Bot -- AsyncPG --> DB
+    end
+    
+    subgraph "External"
+        SalesAI --> Gemini[Google Gemini 2.5 Flash]
+        BizAI --> Gemini
+    end
+```
+
+### Key Technologies
+- **Python 3.12+**: Asynchronous core using `python-telegram-bot`.
+- **AsyncPG**: High-performance non-blocking database driver.
+- **Google Gemini 2.5 Flash**: Fast, low-latency LLM for instant replies.
+- **Matplotlib**: Generates beautiful sales charts on the fly.
+- **Fly.io**: Deployed on Firecracker MicroVMs for zero-downtime.
 
 ---
 
-## �️ Installation & Setup
+## 🛠️ Installation & Setup
 
-### 1️⃣ Prerequisites
-- **Python 3.11+** installed.
-- **Git** installed.
-- **PostgreSQL Database** (e.g., Neon.tech).
-- **Telegram Bot Token** (from @BotFather).
-- **Gemini API Key** (from Google AI Studio).
+### 1. Prerequisites
+- Python 3.11 or higher.
+- A PostgreSQL Database (Recommended: [Neon.tech](https://neon.tech)).
+- Telegram Bot Token (@BotFather).
+- Gemini API Key (Google AI Studio).
 
-### 2️⃣ Clone & Install
+### 2. Local Setup
 ```bash
 # Clone the repository
 git clone https://github.com/kazisalman21/nongor-bot.git
 cd nongor-bot
 
-# Create virtual environment
-python -m venv venv
-source venv/bin/activate  # Windows: venv\Scripts\activate
-
 # Install dependencies
 pip install -r requirements.txt
+
+# Create .env file
+cp .env.example .env
 ```
 
-### 3️⃣ Configuration (`.env`)
-Create a `.env` file in the root directory:
+### 3. Configuration (.env)
+Fill in your credentials in `.env`:
 ```ini
-TELEGRAM_BOT_TOKEN=your_bot_token
-ADMIN_USER_IDS=123456789,987654321
-GEMINI_API_KEY=your_gemini_api_key
-DATABASE_URL=postgresql://user:pass@host/db?sslmode=require
-WEBSITE_URL=https://nongor-brand.vercel.app
-ENABLE_WEB_SCRAPING=true
+TELEGRAM_BOT_TOKEN=123456:ABC-DEF...
+ADMIN_USER_IDS=987654321,123456789 (comma separated)
+GEMINI_API_KEY=AIzaSy...
+NETLIFY_DATABASE_URL=postgresql://user:pass@ep-xyz.region.neon.tech/neondb?sslmode=require
 ```
+
+### 4. Run the Bot
+```bash
+python bot_standard/main.py
+```
+
+---
+
+## 📚 Admin Manual
+
+### 🤖 Commanding the Business AI
+As an admin, you have a **Senior Manager** at your disposal. Try these prompts:
+- *"Give me a summary of today's sales."* → Returns revenue, order count, and comparison to last week.
+- *"What should I restock?"* → Checks inventory < 10 units and cross-references with high sales velocity.
+- *"Which category is making the most money?"* → Returns category-wise revenue breakdown.
+- *"Find order #1234"* → Fetches customer details, payment status, and courier info.
+
+### ⌨️ Command Reference
+| Command | Action |
+| :--- | :--- |
+| `/start` | Open the Main Menu |
+| `/refresh` | Force sync data from database |
+| `/dashboard` | View quick visuals of today's stats |
+| `/orders` | See last 10 orders with status buttons |
+| `/products` | Manage inventory context |
 
 ---
 
 ## 🚀 Deployment (Fly.io)
 
-We recommend **Fly.io** for hosting (Standard Python + Docker).
+We rely on **Fly.io** for production-grade hosting.
 
-1.  **Install Fly CLI** & Login.
-2.  **Initialize App**:
+1.  **Install Fly CLI** and login.
+2.  **Initialize**:
     ```bash
     fly launch
     ```
-3.  **Set Secrets**:
+3.  **Set Secrets** (Crucial for security):
     ```bash
-    fly secrets set TELEGRAM_BOT_TOKEN=... GEMINI_API_KEY=... DATABASE_URL=...
+    fly secrets set TELEGRAM_BOT_TOKEN=... \
+                    GEMINI_API_KEY=... \
+                    NETLIFY_DATABASE_URL=...
     ```
 4.  **Deploy**:
     ```bash
@@ -114,151 +154,26 @@ We recommend **Fly.io** for hosting (Standard Python + Docker).
 
 ---
 
-## 💻 Git Commands for Updates
+## 📂 Project Structure
 
-To push your latest changes to GitHub:
-
-```bash
-# 1. Check status of changed files
-git status
-
-# 2. Add all changes
-git add .
-
-# 3. Commit changes (add a message)
-git commit -m "Upgrade to Premium Bot v3.0"
-
-# 4. Push to remote repository
-git push origin main
 ```
-
----
-
-## 📖 Usage
-
-### Admin Guide
-
-1. Start the bot with `/start`
-2. You'll see the Admin Menu with:
-   - 📊 Dashboard - Business overview
-   - 📦 Orders - Recent orders list
-   - 💰 Sales - Revenue analytics
-   - 📉 Inventory - Stock levels
-   - 👥 Users - User statistics
-   - 🤖 AI - Business insights
-
-### User Guide
-
-1. Start the bot with `/start`
-2. You'll see the User Menu with:
-   - 🤖 Chat with AI - Ask questions
-   - 📦 Track Order - Find your order
-   - 🛍️ Products - Browse catalog
-   - ℹ️ About - Brand info
-   - 📱 Contact - Get in touch
-
-### Order Tracking
-
-Users can track orders by:
-1. **Phone number**: Just mention your phone (01711222333)
-2. **Order ID**: Say "order #12345" or "track 12345"
-
-The bot auto-detects these in messages!
-
----
-
-## 🔧 Commands
-
-### Universal Commands
-| Command | Description |
-|---------|-------------|
-| `/start` | Main menu |
-| `/menu` | Show menu |
-| `/help` | List commands |
-| `/ai` | Start AI chat |
-
-### Admin Commands
-| Command | Description |
-|---------|-------------|
-| `/dashboard` | Business dashboard |
-| `/orders` | Recent orders |
-| `/sales` | Sales analytics |
-| `/inventory` | Stock levels |
-| `/refresh` | Refresh cached data |
-
-### User Commands
-| Command | Description |
-|---------|-------------|
-| `/track` | Track order |
-| `/products` | Product catalog |
-| `/about` | About Nongor |
-| `/contact` | Contact info |
-| `/support` | Support options |
-
----
-
-## 📚 API Reference
-
-### Database Methods (AsyncPG)
-
-```python
-from database import Database
-
-# Initialize
-db = Database(DATABASE_URL)
-await db.connect()
-
-# Orders
-order = await db.get_order_by_id(12345)
-order = await db.get_order_by_phone("01711222333")
-orders = await db.get_recent_orders(limit=10)
-
-# Analytics
-today = await db.get_today_stats()
-weekly = await db.get_weekly_stats()
+nongor_bot_v3/
+├── bot_standard/
+│   ├── main.py             # 🧠 The BRAIN. Contains all logic & AI.
+│   ├── database.py         # 💾 The MEMORY. Async database methods.
+│   ├── knowledge_base.md   # 📖 The RULEBOOK. Policies for Customer AI.
+│   └── backups/            # 📦 Old files (safe to ignore)
+│
+├── requirements.txt        # Python libraries
+├── fly.toml                # Deployment config
+└── README.md               # This manual
 ```
-
-### AI System
-
-The AI uses a **System Prompt** (`system_prompt.py`) to inject context dynamically.
-It retrieves:
-- Product Inventory
-- Delivery Policies
-- Business Hours
-- User Session Data
-
----
-
-## ❓ Troubleshooting
-
-### ❌ "ModuleNotFoundError: asyncpg"
-The bot is missing the database driver.
-- **Fix**: Run `pip install asyncpg` or check `requirements.txt`.
-
-### ❌ "Database connection failed"
-- **Fix**: Check `DATABASE_URL` in `.env` or Fly Secrets. ensuring it starts with `postgresql://`.
-- **Fix**: Ensure `sslmode=require` is at the end of the URL.
-
-### ❌ "AttributeError: NoneType has no attribute 'reply_text'"
-This happens if a button handler tries to reply to a message that doesn't exist.
-- **Fix**: The code has been patched to handle `callback_query.message` correctly.
-
-### ❌ Charts not generating
-- **Fix**: Ensure `matplotlib` is installed and the host has fonts available (Fly.io Dockerfile handles this).
-
----
-
-## � License
-
-© 2026 Nongor Premium. All Rights Reserved.
-Built with ❤️ by **Kazi Salman**.
 
 ---
 
 <div align="center">
 
-**Built with ❤️ for Nongor Premium**
-
-[Website](https://nongor-brand.vercel.app) • [Facebook](https://facebook.com/nongor) • [Support](mailto:support@nongor.com)
+**© 2026 Nongor Brand Technology**
+*Built for High-Growth E-commerce*
 
 </div>
