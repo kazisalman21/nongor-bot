@@ -1,3 +1,4 @@
+
 import logging
 import os
 import sys
@@ -15,25 +16,31 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Import Database (Standard Version)
-# Ensure bot_standard is in path or run from root
+# Import Database (Enhanced Version)
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 from database import Database
 
-# 3rd Party Imports (Standard)
+# 3rd Party Imports
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     Application, CommandHandler, MessageHandler, 
-    CallbackQueryHandler, filters
+    CallbackQueryHandler, filters, ContextTypes
 )
 from telegram.constants import ParseMode
 from telegram.error import BadRequest
-import google.generativeai as genai
 import csv
 import io
 import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
+
+# Optional: AI
+try:
+    import google.generativeai as genai
+    AI_AVAILABLE = True
+except ImportError:
+    AI_AVAILABLE = False
+    logger.warning("google-generativeai not installed. AI features disabled.")
 
 # ===============================================
 # GLOBAL STATE & CONFIG
@@ -45,10 +52,14 @@ ADMIN_USER_IDS = [
 ]
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
-DATABASE_URL = os.getenv("DATABASE_URL") or os.getenv("NETLIFY_DATABASE_URL")
+DATABASE_URL = os.getenv("NETLIFY_DATABASE_URL")
 
 if not DATABASE_URL:
-    logger.error("DATABASE_URL or NETLIFY_DATABASE_URL is missing in .env!")
+    logger.error("NETLIFY_DATABASE_URL is missing in .env!")
+    sys.exit(1)
+
+if not TELEGRAM_BOT_TOKEN:
+    logger.error("TELEGRAM_BOT_TOKEN is missing in .env!")
     sys.exit(1)
 
 # Initialize Database
@@ -56,10 +67,12 @@ db = Database(DATABASE_URL)
 
 # Initialize AI
 ai_initialized = False
-if GEMINI_API_KEY:
+if AI_AVAILABLE and GEMINI_API_KEY:
     try:
         genai.configure(api_key=GEMINI_API_KEY)
+        ai_model = genai.GenerativeModel('gemini-2.5-flash')
         ai_initialized = True
+        logger.info("AI initialized successfully with model gemini-2.5-flash")
     except Exception as e:
         logger.error(f"AI initialization failed: {e}")
 
@@ -94,13 +107,16 @@ class UserSession:
         self.role = "admin" if user_id in ADMIN_USER_IDS else "user"
         self.state = "menu"
         self.last_activity = datetime.now()
+        self.temp_data = {}
 
 user_sessions = {}
 
 def get_session(user_id, username=None, first_name=None):
     if user_id not in user_sessions:
         user_sessions[user_id] = UserSession(user_id, username, first_name)
-    return user_sessions[user_id]
+    session = user_sessions[user_id]
+    session.last_activity = datetime.now()
+    return session
 
 # ===============================================
 # KEYBOARDS
@@ -109,31 +125,48 @@ def get_session(user_id, username=None, first_name=None):
 def get_admin_menu():
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("📊 Dashboard", callback_data="admin_dashboard"),
-         InlineKeyboardButton("📈 Sales Chart", callback_data="admin_chart")],
+         InlineKeyboardButton("📈 Analytics", callback_data="admin_analytics")],
         [InlineKeyboardButton("📦 Orders", callback_data="admin_orders"),
-         InlineKeyboardButton("📤 Export CSV", callback_data="admin_export")],
-        [InlineKeyboardButton("💰 Sales", callback_data="admin_sales"),
-         InlineKeyboardButton("📉 Inventory", callback_data="admin_inventory")],
-        [InlineKeyboardButton("◀️ Home", callback_data="back_menu")]
+         InlineKeyboardButton("🔍 Search Order", callback_data="admin_search")],
+        [InlineKeyboardButton("🛍️ Products", callback_data="admin_products"),
+         InlineKeyboardButton("🎟️ Coupons", callback_data="admin_coupons")],
+        [InlineKeyboardButton("📤 Export CSV", callback_data="admin_export"),
+         InlineKeyboardButton("📊 Sales Chart", callback_data="admin_chart")],
+        [InlineKeyboardButton("🤖 AI Assistant", callback_data="admin_ai_chat") if ai_initialized else None],
+        [InlineKeyboardButton("◀️ Refresh", callback_data="back_menu")]
     ])
 
 def get_user_menu():
-    return InlineKeyboardMarkup([
-        [InlineKeyboardButton("🤖 Chat with AI", callback_data="user_ai_chat")],
+    buttons = [
         [InlineKeyboardButton("📦 Track Order", callback_data="user_track_order"),
          InlineKeyboardButton("🛍️ Products", callback_data="user_products")],
         [InlineKeyboardButton("ℹ️ About Us", callback_data="user_about"),
-         InlineKeyboardButton("📱 Contact", callback_data="user_contact")]
-    ])
+         InlineKeyboardButton("📱 Contact", callback_data="user_contact")],
+        [InlineKeyboardButton("📜 Policies", callback_data="user_policies")]
+    ]
+    
+    if ai_initialized:
+        buttons.insert(0, [InlineKeyboardButton("🤖 Chat with AI", callback_data="user_ai_chat")])
+    
+    return InlineKeyboardMarkup(buttons)
 
 def get_back_button(callback_data="back_menu"):
     return InlineKeyboardMarkup([[InlineKeyboardButton("◀️ Back to Menu", callback_data=callback_data)]])
 
+def get_order_filter_menu():
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("📋 All Orders", callback_data="filter_all"),
+         InlineKeyboardButton("⏳ Pending", callback_data="filter_pending")],
+        [InlineKeyboardButton("✅ Delivered", callback_data="filter_delivered"),
+         InlineKeyboardButton("❌ Cancelled", callback_data="filter_cancelled")],
+        [InlineKeyboardButton("◀️ Back", callback_data="admin_orders")]
+    ])
+
 # ===============================================
-# HANDLERS
+# COMMAND HANDLERS
 # ===============================================
 
-async def start(update: Update, context):
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     session = get_session(user.id, user.username, user.first_name)
     session.state = "menu"
@@ -141,340 +174,826 @@ async def start(update: Update, context):
     await db.save_user(user.id, user.username, user.first_name)
     
     if session.role == "admin":
-        text = f"👋 Welcome back, Admin **{user.first_name}**!\nChoose an option:"
+        text = (
+            f"👋 **Hello! I am Eikta**\n"
+            f"🤖 *Your Personal Assistant for Nongor*\n\n"
+            f"👤 **{user.first_name}** (`@{user.username}`)\n"
+            f"🆔 `{user.id}`\n\n"
+            f"🛠 **Admin Control Panel**\n"
+            f"Select an action below to manage your store:"
+        )
         reply_markup = get_admin_menu()
     else:
-        text = f"👋 Salam, **{user.first_name}**! Welcome to Nongor Premium.\nHow can I help you today?"
+        text = (
+            f"👋 **Hello! I am Eikta**\n"
+            f"🤖 *Your Personal Shopping Assistant*\n\n"
+            f"Welcome to **Nongor**! 🌸\n"
+            f"I'm here to help you find the perfect outfit.\n\n"
+            f"👤 **{user.first_name}**\n"
+            f"🆔 `{user.id}`\n\n"
+            f"🛍 **How can I help you today?**"
+        )
         reply_markup = get_user_menu()
     
-    if update.message:
-        await update.message.reply_text(text, parse_mode=ParseMode.MARKDOWN, reply_markup=reply_markup)
-    elif update.callback_query:
-        try:
+    try:
+        if update.message:
+            await update.message.reply_text(text, parse_mode=ParseMode.MARKDOWN, reply_markup=reply_markup)
+        elif update.callback_query:
             await update.callback_query.edit_message_text(text, parse_mode=ParseMode.MARKDOWN, reply_markup=reply_markup)
-        except BadRequest:
+    except BadRequest:
+        if update.callback_query:
             await update.callback_query.message.reply_text(text, parse_mode=ParseMode.MARKDOWN, reply_markup=reply_markup)
 
-async def menu(update: Update, context):
-    await start(update, context)
-
-async def help_command(update: Update, context):
+async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     is_admin = user_id in ADMIN_USER_IDS
-    text = "📚 **ADMIN COMMANDS**\n/start, /menu, /dashboard, /export" if is_admin else \
-           "📚 **USER COMMANDS**\n/start, /menu, /track, /products, /about, /contact, /support"
+    
+    if is_admin:
+        text = """📚 **ADMIN COMMANDS**
+
+/start - Main menu
+/dashboard - Quick stats
+/orders - Recent orders
+/export - Export CSV
+/search - Search orders
+/products - Product list
+/help - This help message
+"""
+    else:
+        text = """📚 **AVAILABLE COMMANDS**
+
+/start - Main menu
+/track - Track your order
+/products - Browse products
+/about - About Nongor
+/contact - Contact us
+/help - This help message
+"""
+    
     await update.message.reply_text(text, parse_mode=ParseMode.MARKDOWN)
 
-# Admin Handlers
-async def admin_dashboard(update: Update, context):
-    if update.effective_user.id not in ADMIN_USER_IDS: return
-    
-    today = await db.get_today_stats()
-    weekly = await db.get_weekly_stats()
-    users = await db.get_user_stats()
-    
-    text = f"📊 **BUSINESS DASHBOARD**\n\n**TODAY:**\n📦 Orders: {today.get('order_count', 0)}\n💰 Revenue: ৳{today.get('total_revenue', 0):,.2f}\n\n**WEEKLY:**\n📦 Orders: {weekly.get('order_count', 0)}\n💰 Revenue: ৳{weekly.get('total_revenue', 0):,.2f}\n\n**USERS:**\n👥 Total: {users.get('total_users', 0)}\n🔥 Active (7d): {users.get('active_users', 0)}"
-    
-    reply_markup = get_back_button()
-    if update.callback_query:
-        await update.callback_query.edit_message_text(text, parse_mode=ParseMode.MARKDOWN, reply_markup=reply_markup)
-    else:
-        await update.message.reply_text(text, parse_mode=ParseMode.MARKDOWN, reply_markup=reply_markup)
+# ===============================================
+# ADMIN HANDLERS
+# ===============================================
 
-async def admin_orders(update: Update, context):
-    if update.effective_user.id not in ADMIN_USER_IDS: return
-    orders = await db.get_recent_orders(limit=10)
-    
-    text = "📦 **RECENT ORDERS**\n\n" + "\n".join([
-        f"• #{o.get('order_id', 'N/A')} - {o.get('customer_name', 'Unknown')} - ৳{o.get('total') or 0:,.0f}" 
-        for o in orders
-    ]) if orders else "📦 **RECENT ORDERS**\n\nNo orders found."
-    
-    reply_markup = get_back_button()
-    if update.callback_query:
-        await update.callback_query.edit_message_text(text, parse_mode=ParseMode.MARKDOWN, reply_markup=reply_markup)
-    else:
-        await update.message.reply_text(text, parse_mode=ParseMode.MARKDOWN, reply_markup=reply_markup)
-
-async def admin_sales(update: Update, context):
-    if update.effective_user.id not in ADMIN_USER_IDS: return
-    top = await db.get_top_products(limit=5)
-    
-    text = "💰 **TOP PRODUCTS**\n\n" + "\n".join([
-        f"{i+1}. {p.get('product_name', 'Unknown')}: ৳{p.get('revenue', 0):,.0f}" 
-        for i, p in enumerate(top)
-    ]) if top else "💰 **TOP PRODUCTS**\n\nNo sales data available."
-    
-    reply_markup = get_back_button()
-    if update.callback_query:
-        await update.callback_query.edit_message_text(text, parse_mode=ParseMode.MARKDOWN, reply_markup=reply_markup)
-    else:
-        await update.message.reply_text(text, parse_mode=ParseMode.MARKDOWN, reply_markup=reply_markup)
-
-async def admin_inventory(update: Update, context):
-    if update.effective_user.id not in ADMIN_USER_IDS: return
-    products = await db.get_available_products()
-    
-    text = "📉 **INVENTORY**\n\n" + "\n".join([
-        f"• {p.get('name', 'Unknown')}: {p.get('order_count', 0)} orders" 
-        for p in products[:15]
-    ]) if products else "📉 **INVENTORY**\n\nNo products found."
-    
-    reply_markup = get_back_button()
-    if update.callback_query:
-        await update.callback_query.edit_message_text(text, parse_mode=ParseMode.MARKDOWN, reply_markup=reply_markup)
-    else:
-        await update.message.reply_text(text, parse_mode=ParseMode.MARKDOWN, reply_markup=reply_markup)
-
-# User Handlers
-async def user_products(update: Update, context):
-    products = await db.get_available_products()
-    
-    text = "🛍️ **PRODUCTS**\n\n" + "\n".join([
-        f"• {p.get('name', 'Unknown')}: ৳{p.get('price', 0):,.0f}" 
-        for p in products[:15]
-    ]) if products else "🛍️ **PRODUCTS**\n\nNo products available at the moment."
-    
-    reply_markup = get_back_button()
-    if update.callback_query:
-        await update.callback_query.edit_message_text(text, parse_mode=ParseMode.MARKDOWN, reply_markup=reply_markup)
-    else:
-        await update.message.reply_text(text, parse_mode=ParseMode.MARKDOWN, reply_markup=reply_markup)
-
-async def user_track_order(update: Update, context):
-    text = "📦 **TRACK ORDER**\nPlease enter your phone number or Order ID (e.g., 01711222333 or #12345):"
-    session = get_session(update.effective_user.id)
-    session.state = "waiting_tracking"
-    
-    reply_markup = get_back_button()
-    if update.callback_query:
-        await update.callback_query.edit_message_text(text, parse_mode=ParseMode.MARKDOWN, reply_markup=reply_markup)
-    else:
-        await update.message.reply_text(text, parse_mode=ParseMode.MARKDOWN, reply_markup=reply_markup)
-
-async def user_about(update: Update, context):
-    text = f"ℹ️ **ABOUT NONGOR PREMIUM**\n═══════════════════════════════\n\n🎨 **Who We Are**\nPremium clothing brand delivering style, quality, \nand comfort to fashion-conscious individuals in BD.\n\n✨ **Our Promise**\n✅ Premium quality materials\n✅ Trendy, modern designs\n✅ Fast & reliable delivery\n\n🕐 **Business Hours**\n{BUSINESS_HOURS['weekdays']['days']}: {BUSINESS_HOURS['weekdays']['hours']}\n{BUSINESS_HOURS['friday']['days']}: {BUSINESS_HOURS['friday']['hours']}\n\n🚚 **Delivery**\n• Dhaka: {DELIVERY_POLICIES['dhaka']['time']} (৳{DELIVERY_POLICIES['dhaka']['charge']})\n• Outside: {DELIVERY_POLICIES['outside']['time']} (৳{DELIVERY_POLICIES['outside']['charge']})\n• Free shipping on orders above ৳{DELIVERY_POLICIES['dhaka']['free_above']}\n\nThank you for choosing Nongor! 💚"
-    
-    reply_markup = get_back_button()
-    if update.callback_query:
-        await update.callback_query.edit_message_text(text, parse_mode=ParseMode.MARKDOWN, reply_markup=reply_markup)
-    else:
-        await update.message.reply_text(text, parse_mode=ParseMode.MARKDOWN, reply_markup=reply_markup)
-
-async def user_contact(update: Update, context):
-    text = f"📱 **CONTACT US**\n═══════════════════════════════\n\n📞 **Phone/WhatsApp**\n{CONTACT_INFO['whatsapp']}\n\n📧 **Email**\n{CONTACT_INFO['email']}\n\n🌐 **Website**\n{CONTACT_INFO['website']}\n\n🕐 **Business Hours**\n{BUSINESS_HOURS['weekdays']['days']}: {BUSINESS_HOURS['weekdays']['hours']}\n\n**Response Times:**\n• WhatsApp: {BUSINESS_HOURS['response_times']['whatsapp']} ⚡\n• Email: {BUSINESS_HOURS['response_times']['email']}"
-    
-    if update.callback_query:
-        await update.callback_query.edit_message_text(text, parse_mode=ParseMode.MARKDOWN, reply_markup=get_back_button())
-    else:
-        await update.message.reply_text(text, parse_mode=ParseMode.MARKDOWN, reply_markup=get_back_button())
-
-async def user_support(update: Update, context):
-    await user_contact(update, context)
-
-# Message Processing
-async def handle_message(update: Update, context):
-    session = get_session(update.effective_user.id)
-    text = update.message.text
-    
-    if session.state == "waiting_tracking":
-        await process_tracking(update, text)
-    else:
-        await handle_ai_chat(update, context, text)
-
-async def process_tracking(update: Update, text: str):
-    await update.message.reply_text("🔍 Searching for order...")
-    
-    # Reset state
-    session = get_session(update.effective_user.id)
-    session.state = "menu"
-    
-    order = None
-    if re.match(r'01[3-9]\d{8}', text):
-        order = await db.get_order_by_phone(text)
-    else:
-        order_id_match = re.search(r'\d+', text)
-        if order_id_match: 
-            order = await db.get_order_by_id(int(order_id_match.group()))
-    
-    if order:
-        resp = f"📦 **Order Found!**\nID: #{order.get('id', 'N/A')}\nStatus: {order.get('status', 'unknown').upper()}\nTotal: ৳{order.get('total', 0):,.0f}"
-    else:
-        resp = "❌ No order found. Please check the details and try again."
-    
-    await update.message.reply_text(resp, parse_mode=ParseMode.MARKDOWN, reply_markup=get_back_button())
-
-from system_prompt import SYSTEM_PROMPT_TEMPLATE
-
-# ... (Global imports remain same)
-
-async def handle_ai_chat(update: Update, context, message: str):
-    if not ai_initialized:
-        await update.message.reply_text("⚠️ AI features are currently disabled.")
+async def admin_dashboard(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id not in ADMIN_USER_IDS: 
         return
     
     try:
-        # 1. Prepare Context (Tools/Data)
-        ctx = await db.get_products_for_context()
-        policies = f"Delivery: Dhaka {DELIVERY_POLICIES['dhaka']['time']}, Outside {DELIVERY_POLICIES['outside']['time']}. Free ship > {DELIVERY_POLICIES['dhaka']['free_above']}."
+        today = await db.get_today_stats()
+        weekly = await db.get_weekly_stats()
+        monthly = await db.get_monthly_stats()
+        users = await db.get_user_stats()
+        pending = await db.get_pending_orders_count()
+        low_stock = await db.get_low_stock_products(threshold=10)
         
-        # 2. Inject Dynamic Values into System Prompt
-        admin_ids_str = ", ".join(map(str, ADMIN_USER_IDS))
-        system_instruction = SYSTEM_PROMPT_TEMPLATE.replace("{PUT_ADMIN_TELEGRAM_USER_IDS_HERE}", admin_ids_str)
-        
-        # 3. Construct User Prompt with Context Data
-        # We append the "Data Sources" to the user message so Gemini treats them as retrieved info.
-        full_user_prompt = f"""
-CONTEXT DATA (Use this to answer):
-----------------------------------
-POLICIES:
-{policies}
+        text = f"""📊 **BUSINESS DASHBOARD**
+━━━━━━━━━━━━━━━━━━━━━━
 
-CURRENT PRODUCT INVENTORY:
-{ctx}
-----------------------------------
+📅 **TODAY:**
+📦 Orders: {today.get('order_count', 0)}
+💰 Revenue: ৳{today.get('total_revenue', 0):,.2f}
+📊 Avg Value: ৳{today.get('avg_order_value', 0):,.2f}
 
-USER MESSAGE:
-{message}
+📅 **THIS WEEK:**
+📦 Orders: {weekly.get('order_count', 0)}
+💰 Revenue: ৳{weekly.get('total_revenue', 0):,.2f}
+📊 Avg Value: ৳{weekly.get('avg_order_value', 0):,.2f}
+
+📅 **THIS MONTH:**
+📦 Orders: {monthly.get('order_count', 0)}
+💰 Revenue: ৳{monthly.get('total_revenue', 0):,.2f}
+
+👥 **USERS:**
+Total: {users.get('total_users', 0)}
+Active (7d): {users.get('active_users', 0)}
+
+⚠️ **ALERTS:**
+⏳ Pending Orders: {pending}
+📦 Low Stock Items: {len(low_stock)}
 """
         
-        # 4. Generate Response
-        # Note: system_instruction is passed to GenerativeModel constructor if supported, 
-        # or we rely on 'role: system' in prompt history.
-        # or we rely on 'role: system' in prompt history.
-        # For 'google-generativeai', we can use system_instruction in GenerativeModel.
-        # Using 'gemini-1.5-flash' should work, but trying 'gemini-1.5-flash-latest' to be safe.
-        model = genai.GenerativeModel('gemini-1.5-flash-latest', system_instruction=system_instruction)
-        response = model.generate_content(full_user_prompt)
-        reply = response.text
+        reply_markup = get_back_button()
         
-        try:
-            await update.message.reply_text(reply, parse_mode=ParseMode.MARKDOWN)
-        except BadRequest:
-            await update.message.reply_text(reply)
+        if update.callback_query:
+            await update.callback_query.edit_message_text(text, parse_mode=ParseMode.MARKDOWN, reply_markup=reply_markup)
+        else:
+            await update.message.reply_text(text, parse_mode=ParseMode.MARKDOWN, reply_markup=reply_markup)
             
     except Exception as e:
-        logger.error(f"AI Error: {e}")
-        await update.message.reply_text("⚠️ Error generating response. Please try again.")
+        logger.error(f"Dashboard error: {e}")
+        error_text = "❌ Error loading dashboard. Please try again."
+        if update.callback_query:
+            await update.callback_query.edit_message_text(error_text)
+        else:
+            await update.message.reply_text(error_text)
 
-async def button_callback(update: Update, context):
+async def admin_analytics(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id not in ADMIN_USER_IDS: 
+        return
+    
+    try:
+        status_breakdown = await db.get_status_breakdown()
+        payment_stats = await db.get_payment_method_stats()
+        delivery_breakdown = await db.get_delivery_status_breakdown()
+        
+        text = "📊 **ADVANCED ANALYTICS** (Last 30 Days)\n━━━━━━━━━━━━━━━━━━━━━━\n\n"
+        
+        # Order Status
+        text += "📋 **Order Status:**\n"
+        for stat in status_breakdown:
+            text += f"• {stat['status']}: {stat['count']} orders (৳{stat['revenue']:,.0f})\n"
+        
+        text += "\n💳 **Payment Methods:**\n"
+        for method in payment_stats:
+            text += f"• {method['payment_method']}: {method['count']} orders (৳{method['revenue']:,.0f})\n"
+        
+        text += "\n🚚 **Delivery Status:**\n"
+        for delivery in delivery_breakdown:
+            text += f"• {delivery['delivery_status']}: {delivery['count']} orders\n"
+        
+        reply_markup = get_back_button()
+        
+        if update.callback_query:
+            await update.callback_query.edit_message_text(text, parse_mode=ParseMode.MARKDOWN, reply_markup=reply_markup)
+        else:
+            await update.message.reply_text(text, parse_mode=ParseMode.MARKDOWN, reply_markup=reply_markup)
+            
+    except Exception as e:
+        logger.error(f"Analytics error: {e}")
+        await send_error_message(update, "loading analytics")
+
+async def admin_orders(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id not in ADMIN_USER_IDS: 
+        return
+    
+    try:
+        orders = await db.get_recent_orders(limit=10)
+        
+        if not orders:
+            text = "📦 **RECENT ORDERS**\n\nNo orders found."
+        else:
+            text = "📦 **RECENT ORDERS**\n━━━━━━━━━━━━━━━━━━━━━━\n\n"
+            for o in orders:
+                # Fixed: Use total_price instead of total
+                total = o.get('total_price', 0) or 0
+                status_emoji = get_status_emoji(o.get('status'))
+                text += f"{status_emoji} **{o.get('order_id', 'N/A')}**\n"
+                text += f"👤 {o.get('customer_name', 'Unknown')}\n"
+                text += f"📱 {o.get('phone', 'N/A')}\n"
+                text += f"💰 ৳{total:,.0f}\n"
+                text += f"📊 {o.get('delivery_status', o.get('status', 'N/A'))}\n"
+                text += "─────────────────\n"
+        
+        reply_markup = InlineKeyboardMarkup([
+            [InlineKeyboardButton("🔍 Search Order", callback_data="admin_search"),
+             InlineKeyboardButton("🔄 Filter", callback_data="admin_filter")],
+            [InlineKeyboardButton("◀️ Back", callback_data="back_menu")]
+        ])
+        
+        if update.callback_query:
+            await update.callback_query.edit_message_text(text, parse_mode=ParseMode.MARKDOWN, reply_markup=reply_markup)
+        else:
+            await update.message.reply_text(text, parse_mode=ParseMode.MARKDOWN, reply_markup=reply_markup)
+            
+    except Exception as e:
+        logger.error(f"Orders error: {e}")
+        await send_error_message(update, "loading orders")
+
+async def admin_products(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id not in ADMIN_USER_IDS: 
+        return
+    
+    try:
+        products = await db.get_all_products(active_only=True)
+        low_stock = await db.get_low_stock_products(threshold=10)
+        
+        text = f"🛍️ **PRODUCT INVENTORY**\n━━━━━━━━━━━━━━━━━━━━━━\n\n"
+        text += f"📊 Total Active: {len(products)}\n"
+        text += f"⚠️ Low Stock: {len(low_stock)}\n\n"
+        
+        if low_stock:
+            text += "**⚠️ Low Stock Alert:**\n"
+            for p in low_stock[:5]:
+                text += f"• {p['name']}: {p['stock_quantity']} left\n"
+            text += "\n"
+        
+        text += "**All Products:**\n"
+        # Show all products (limit to 10 for now to avoid message limit)
+        display_products = products[:10]
+        for p in display_products:
+            stock_emoji = "✅" if p['stock_quantity'] > 10 else "⚠️"
+            featured_star = "⭐" if p.get('is_featured') else ""
+            text += f"{stock_emoji} {p['name']} {featured_star}\n"
+            text += f"   ৳{p['price']:,.0f} • Stock: {p['stock_quantity']}\n"
+        
+        reply_markup = get_back_button()
+        
+        if update.callback_query:
+            await update.callback_query.edit_message_text(text, parse_mode=ParseMode.MARKDOWN, reply_markup=reply_markup)
+        else:
+            await update.message.reply_text(text, parse_mode=ParseMode.MARKDOWN, reply_markup=reply_markup)
+            
+    except Exception as e:
+        logger.error(f"Products error: {e}")
+        await send_error_message(update, "loading products")
+
+async def admin_coupons(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id not in ADMIN_USER_IDS: 
+        return
+    
+    try:
+        # Fetch ALL coupons (active and inactive)
+        coupons = await db.get_all_coupons(active_only=False)
+        
+        if not coupons:
+            text = "🎟️ **COUPON MANAGEMENT**\n\nNo coupons found."
+        else:
+            text = "🎟️ **COUPON MANAGEMENT**\n━━━━━━━━━━━━━━━━━━━━━━\n\n"
+            for c in coupons:
+                status_emoji = "✅" if c.get('is_active', True) else "❌"
+                discount_text = f"{c['discount_value']}%" if c['discount_type'] == 'percentage' else f"৳{c['discount_value']}"
+                usage_text = f"{c['used_count']}/{c['usage_limit']}" if c['usage_limit'] else f"{c['used_count']} used"
+                
+                text += f"{status_emoji} **{c['code']}**\n"
+                text += f"💰 {discount_text} off\n"
+                text += f"📊 {usage_text}\n"
+                if c['min_order_amount']:
+                    text += f"📦 Min: ৳{c['min_order_amount']}\n"
+                if c['valid_until']:
+                    text += f"⏰ Until: {c['valid_until'].strftime('%Y-%m-%d')}\n"
+                text += "─────────────────\n"
+        
+        reply_markup = get_back_button()
+        
+        if update.callback_query:
+            await update.callback_query.edit_message_text(text, parse_mode=ParseMode.MARKDOWN, reply_markup=reply_markup)
+        else:
+            await update.message.reply_text(text, parse_mode=ParseMode.MARKDOWN, reply_markup=reply_markup)
+            
+    except Exception as e:
+        logger.error(f"Coupons error: {e}")
+        await send_error_message(update, "loading coupons")
+
+async def admin_search(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id not in ADMIN_USER_IDS:
+        return
+    
+    session = get_session(update.effective_user.id)
+    session.state = "waiting_search"
+    
+    text = "🔍 **SEARCH ORDERS**\n\nEnter order ID, customer name, phone, or email:"
+    reply_markup = get_back_button()
+    
+    if update.callback_query:
+        await update.callback_query.edit_message_text(text, parse_mode=ParseMode.MARKDOWN, reply_markup=reply_markup)
+    else:
+        await update.message.reply_text(text, parse_mode=ParseMode.MARKDOWN, reply_markup=reply_markup)
+
+async def admin_filter(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id not in ADMIN_USER_IDS:
+        return
+    
+    reply_markup = get_order_filter_menu()
+    text = "🔄 **FILTER ORDERS**\n\nChoose a status to filter:"
+    
+    if update.callback_query:
+        await update.callback_query.edit_message_text(text, parse_mode=ParseMode.MARKDOWN, reply_markup=reply_markup)
+    else:
+        await update.message.reply_text(text, parse_mode=ParseMode.MARKDOWN, reply_markup=reply_markup)
+
+async def handle_filter_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     
-    user = update.effective_user
-    session = get_session(user.id, user.username, user.first_name)
-    data = query.data
+    if update.effective_user.id not in ADMIN_USER_IDS:
+        return
     
-    dispatch_map = {
+    filter_type = query.data.replace("filter_", "")
+    
+    try:
+        if filter_type == "all":
+            orders = await db.get_recent_orders(limit=20)
+            title = "ALL ORDERS"
+        else:
+            status_map = {
+                "pending": "Pending",
+                "delivered": "Delivered",
+                "cancelled": "Cancelled"
+            }
+            status = status_map.get(filter_type, filter_type.capitalize())
+            orders = await db.get_orders_by_status(status, limit=20)
+            title = f"{status.upper()} ORDERS"
+        
+        if not orders:
+            text = f"📦 **{title}**\n\nNo orders found."
+        else:
+            text = f"📦 **{title}**\n━━━━━━━━━━━━━━━━━━━━━━\n\n"
+            for o in orders:
+                total = o.get('total_price', 0) or 0
+                status_emoji = get_status_emoji(o.get('status'))
+                text += f"{status_emoji} **{o.get('order_id', 'N/A')}** - ৳{total:,.0f}\n"
+                text += f"👤 {o.get('customer_name', 'Unknown')}\n"
+                text += "─────────────────\n"
+        
+        reply_markup = InlineKeyboardMarkup([[InlineKeyboardButton("◀️ Back", callback_data="admin_orders")]])
+        await query.edit_message_text(text, parse_mode=ParseMode.MARKDOWN, reply_markup=reply_markup)
+        
+    except Exception as e:
+        logger.error(f"Filter error: {e}")
+        await query.edit_message_text("❌ Error filtering orders.")
+
+async def admin_export(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id not in ADMIN_USER_IDS: 
+        return
+    
+    message = update.message if update.message else update.callback_query.message
+    msg = await message.reply_text("⏳ Generating CSV export...")
+    
+    try:
+        csv_file = await generate_orders_csv()
+        
+        if csv_file:
+            date_str = datetime.now().strftime('%Y-%m-%d')
+            await message.reply_document(
+                document=csv_file,
+                filename=f"nongor_orders_{date_str}.csv",
+                caption=f"📦 Order Export ({date_str})"
+            )
+            await msg.delete()
+        else:
+            await msg.edit_text("❌ No orders to export.")
+    except Exception as e:
+        logger.error(f"Export error: {e}")
+        await msg.edit_text("❌ Failed to generate export.")
+
+async def admin_chart(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id not in ADMIN_USER_IDS: 
+        return
+    
+    message = update.message if update.message else update.callback_query.message
+    msg = await message.reply_text("⏳ Generating sales chart...")
+    
+    try:
+        chart_img = await generate_sales_chart()
+        
+        if chart_img:
+            await message.reply_photo(
+                photo=chart_img, 
+                caption="📊 **Weekly Sales Trend**", 
+                parse_mode=ParseMode.MARKDOWN
+            )
+            await msg.delete()
+        else:
+            await msg.edit_text("❌ Not enough data to generate chart.")
+    except Exception as e:
+        logger.error(f"Chart error: {e}")
+        await msg.edit_text("❌ Failed to generate chart.")
+
+# ===============================================
+# USER HANDLERS
+# ===============================================
+
+async def user_track_order(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    session = get_session(update.effective_user.id)
+    session.state = "waiting_order_id"
+    
+    text = """📦 **TRACK YOUR ORDER**
+
+Please enter your Order ID
+(e.g., #NG-63497)"""
+    
+    reply_markup = get_back_button()
+    
+    if update.callback_query:
+        await update.callback_query.edit_message_text(text, parse_mode=ParseMode.MARKDOWN, reply_markup=reply_markup)
+    else:
+        await update.message.reply_text(text, parse_mode=ParseMode.MARKDOWN, reply_markup=reply_markup)
+
+async def user_products(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    try:
+        # Changed to get ALL active products instead of just featured
+        products = await db.get_all_products(active_only=True)
+        
+        text = "🛍️ **OUR PRODUCTS**\n━━━━━━━━━━━━━━━━━━━━━━\n\n"
+        
+        if products:
+            for p in products:
+                stock_text = "✅ In Stock" if p['stock_quantity'] > 0 else "❌ Out of Stock"
+                text += f"**{p['name']}**\n"
+                text += f"💰 ৳{p['price']:,.0f} • {stock_text}\n"
+                if p.get('description'):
+                    desc = p['description'][:60] + "..." if len(p['description']) > 60 else p['description']
+                    text += f"📝 {desc}\n"
+                text += "─────────────────\n"
+        else:
+            text += "No products available at the moment.\n"
+        
+        text += f"\n🌐 Visit our website:\n{CONTACT_INFO['website']}"
+        
+        reply_markup = get_back_button()
+        
+        if update.callback_query:
+            await update.callback_query.edit_message_text(text, parse_mode=ParseMode.MARKDOWN, reply_markup=reply_markup)
+        else:
+            await update.message.reply_text(text, parse_mode=ParseMode.MARKDOWN, reply_markup=reply_markup)
+            
+    except Exception as e:
+        logger.error(f"Products error: {e}")
+        await send_error_message(update, "loading products")
+
+async def user_about(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    text = """ℹ️ **ABOUT NONGOR PREMIUM**
+
+🌸 Nongor is your destination for premium Bengali cultural fashion and lifestyle products.
+
+**What We Offer:**
+• Traditional and modern Bengali clothing
+• Handcrafted accessories
+• Cultural merchandise
+• Custom designs
+
+**Why Choose Us:**
+✅ Authentic Bengali designs
+✅ High-quality materials
+✅ Fast delivery across Bangladesh
+✅ Easy returns & exchanges
+✅ Secure payment options
+
+🌐 Website: {}
+📱 Follow us: {}
+""".format(CONTACT_INFO['website'], CONTACT_INFO['facebook'])
+    
+    reply_markup = get_back_button()
+    
+    if update.callback_query:
+        await update.callback_query.edit_message_text(text, parse_mode=ParseMode.MARKDOWN, reply_markup=reply_markup)
+    else:
+        await update.message.reply_text(text, parse_mode=ParseMode.MARKDOWN, reply_markup=reply_markup)
+
+async def user_contact(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    text = f"""📱 **CONTACT US**
+
+**Get in Touch:**
+
+📞 Phone: {CONTACT_INFO['phone']}
+💬 WhatsApp: {CONTACT_INFO['whatsapp']}
+📧 Email: {CONTACT_INFO['email']}
+🌐 Website: {CONTACT_INFO['website']}
+📘 Facebook: {CONTACT_INFO['facebook']}
+
+**Business Hours:**
+{BUSINESS_HOURS['weekdays']['days']}: {BUSINESS_HOURS['weekdays']['hours']}
+{BUSINESS_HOURS['friday']['days']}: {BUSINESS_HOURS['friday']['hours']}
+
+**Response Times:**
+WhatsApp: {BUSINESS_HOURS['response_times']['whatsapp']}
+Email: {BUSINESS_HOURS['response_times']['email']}
+"""
+    
+    reply_markup = get_back_button()
+    
+    if update.callback_query:
+        await update.callback_query.edit_message_text(text, parse_mode=ParseMode.MARKDOWN, reply_markup=reply_markup)
+    else:
+        await update.message.reply_text(text, parse_mode=ParseMode.MARKDOWN, reply_markup=reply_markup)
+
+async def user_policies(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    text = f"""📜 **POLICIES & INFORMATION**
+
+**🚚 Shipping:**
+• Dhaka: {DELIVERY_POLICIES['dhaka']['time']} (৳{DELIVERY_POLICIES['dhaka']['charge']})
+• Outside Dhaka: {DELIVERY_POLICIES['outside']['time']} (৳{DELIVERY_POLICIES['outside']['charge']})
+• Free shipping on orders above ৳{DELIVERY_POLICIES['dhaka']['free_above']} (Dhaka)
+
+**💳 Payment:**
+• Cash on Delivery (COD)
+• bKash/Nagad
+• Bank Transfer
+
+**🔄 Returns:**
+• 7-day return policy
+• Items must be unused and in original packaging
+• Return shipping charges may apply
+
+**🔒 Privacy:**
+• Your information is secure
+• We don't share data with third parties
+• See full policy on our website
+
+For detailed policies, visit:
+{CONTACT_INFO['website']}/policies
+"""
+    
+    reply_markup = get_back_button()
+    
+    if update.callback_query:
+        await update.callback_query.edit_message_text(text, parse_mode=ParseMode.MARKDOWN, reply_markup=reply_markup)
+    else:
+        await update.message.reply_text(text, parse_mode=ParseMode.MARKDOWN, reply_markup=reply_markup)
+
+# ===============================================
+# AI CHAT HANDLERS
+# ===============================================
+
+async def handle_ai_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not ai_initialized:
+        text = "🤖 AI Assistant is not available at the moment."
+        reply_markup = get_back_button()
+        
+        if update.callback_query:
+            await update.callback_query.edit_message_text(text, reply_markup=reply_markup)
+        else:
+            await update.message.reply_text(text, reply_markup=reply_markup)
+        return
+    
+    session = get_session(update.effective_user.id)
+    session.state = "ai_chat"
+    
+    if session.role == "admin":
+        text = """🤖 **ADMIN AI ASSISTANT**
+
+I can help you with:
+• Business insights and analytics
+• Product recommendations
+• Order management tips
+• Customer service guidance
+
+Ask me anything about your business!
+
+Type your question or /menu to return."""
+    else:
+        text = """🤖 **SHOPPING ASSISTANT**
+
+Hi! I'm your Nongor shopping assistant.
+
+I can help you with:
+• Product recommendations
+• Order questions
+• Sizing and fit
+• General inquiries
+
+What would you like to know?
+
+Type your question or /menu to return."""
+    
+    reply_markup = get_back_button()
+    
+    if update.callback_query:
+        await update.callback_query.edit_message_text(text, parse_mode=ParseMode.MARKDOWN, reply_markup=reply_markup)
+    else:
+        await update.message.reply_text(text, parse_mode=ParseMode.MARKDOWN, reply_markup=reply_markup)
+
+# ===============================================
+# MESSAGE HANDLER
+# ===============================================
+
+async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    session = get_session(user_id)
+    user_text = update.message.text.strip()
+    
+    # Handle order ID input
+    if session.state == "waiting_order_id":
+        await handle_order_tracking(update, context, user_text)
+        return
+    
+    # Handle search input
+    if session.state == "waiting_search":
+        await handle_search_query(update, context, user_text)
+        return
+    
+    # Handle AI chat
+    if session.state == "ai_chat":
+        await handle_ai_message(update, context, user_text)
+        return
+    
+    # Default: Show menu
+    await start(update, context)
+
+async def handle_order_tracking(update: Update, context: ContextTypes.DEFAULT_TYPE, order_id):
+    try:
+        # Try to find order by order_id string
+        order = await db.get_order_by_order_id(order_id)
+        
+        # If not found, try numeric ID
+        if not order and order_id.replace('#', '').replace('NG-', '').replace('ng-', '').isdigit():
+            numeric_id = int(order_id.replace('#', '').replace('NG-', '').replace('ng-', ''))
+            order = await db.get_order_by_id(numeric_id)
+        
+        if not order:
+            text = f"❌ Order **{order_id}** not found.\n\nPlease check your order ID and try again."
+            await update.message.reply_text(text, parse_mode=ParseMode.MARKDOWN, reply_markup=get_back_button())
+            return
+        
+        # Build order details
+        total = order.get('total_price', 0) or 0
+        status_emoji = get_status_emoji(order.get('status'))
+        
+        text = f"""📦 **ORDER DETAILS**
+━━━━━━━━━━━━━━━━━━━━━━
+
+**Order ID:** {order.get('order_id', 'N/A')}
+**Status:** {status_emoji} {order.get('delivery_status', order.get('status', 'N/A'))}
+
+**Customer:** {order.get('customer_name', 'N/A')}
+**Phone:** {order.get('phone', 'N/A')}
+**Address:** {order.get('address', 'N/A')}
+
+**Product:** {order.get('product_name', 'N/A')}
+**Quantity:** {order.get('quantity', 1)}
+**Total:** ৳{total:,.2f}
+
+**Payment Method:** {order.get('payment_method', 'N/A')}
+**Payment Status:** {order.get('payment_status', 'N/A')}
+"""
+        
+        if order.get('coupon_code'):
+            text += f"**Coupon:** {order['coupon_code']} (-৳{order.get('discount_amount', 0)})\n"
+        
+        if order.get('tracking_token'):
+            text += f"\n**Tracking:** {order['tracking_token'][:20]}...\n"
+        
+        text += f"\n**Ordered:** {order.get('created_at').strftime('%Y-%m-%d %H:%M') if order.get('created_at') else 'N/A'}"
+        
+        if order.get('delivery_date'):
+            text += f"\n**Expected Delivery:** {order['delivery_date']}"
+        
+        await update.message.reply_text(text, parse_mode=ParseMode.MARKDOWN, reply_markup=get_back_button())
+        
+    except Exception as e:
+        logger.error(f"Order tracking error: {e}")
+        await update.message.reply_text("❌ Error retrieving order details.", reply_markup=get_back_button())
+    
+    session = get_session(update.effective_user.id)
+    session.state = "menu"
+
+async def handle_search_query(update: Update, context: ContextTypes.DEFAULT_TYPE, search_term):
+    if update.effective_user.id not in ADMIN_USER_IDS:
+        return
+    
+    try:
+        results = await db.search_orders(search_term)
+        
+        if not results:
+            text = f"🔍 **SEARCH RESULTS**\n\nNo orders found for: **{search_term}**"
+        else:
+            text = f"🔍 **SEARCH RESULTS** ({len(results)} found)\n━━━━━━━━━━━━━━━━━━━━━━\n\n"
+            for o in results[:10]:
+                total = o.get('total_price', 0) or 0
+                status_emoji = get_status_emoji(o.get('status'))
+                text += f"{status_emoji} **{o.get('order_id', 'N/A')}**\n"
+                text += f"👤 {o.get('customer_name', 'Unknown')} • 📱 {o.get('phone', 'N/A')}\n"
+                text += f"💰 ৳{total:,.0f} • {o.get('delivery_status', o.get('status', 'N/A'))}\n"
+                text += "─────────────────\n"
+        
+        await update.message.reply_text(text, parse_mode=ParseMode.MARKDOWN, reply_markup=get_back_button())
+        
+    except Exception as e:
+        logger.error(f"Search error: {e}")
+        await update.message.reply_text("❌ Error searching orders.", reply_markup=get_back_button())
+    
+    session = get_session(update.effective_user.id)
+    session.state = "menu"
+
+async def handle_ai_message(update: Update, context: ContextTypes.DEFAULT_TYPE, user_text):
+    if not ai_initialized:
+        await update.message.reply_text("🤖 AI is not available.")
+        return
+    
+    session = get_session(update.effective_user.id)
+    
+    try:
+        # Build context
+        if session.role == "admin":
+            stats = await db.get_today_stats()
+            products_context = await db.get_products_for_context()
+            
+            prompt = f"""You are an AI business assistant for Nongor, a Bengali fashion e-commerce store.
+
+Today's Stats:
+- Orders: {stats.get('order_count', 0)}
+- Revenue: ৳{stats.get('total_revenue', 0):,.2f}
+
+{products_context}
+
+User question: {user_text}
+
+Provide helpful, actionable business advice."""
+        else:
+            products_context = await db.get_products_for_context()
+            
+            prompt = f"""You are a helpful shopping assistant for Nongor, a Bengali fashion store.
+
+{products_context}
+
+Customer question: {user_text}
+
+Be friendly, helpful, and provide accurate product information."""
+        
+        response = ai_model.generate_content(prompt)
+        ai_text = response.text
+        
+        # Limit response length
+        if len(ai_text) > 800:
+            ai_text = ai_text[:800] + "..."
+        
+        await update.message.reply_text(ai_text, reply_markup=get_back_button())
+        
+    except Exception as e:
+        logger.error(f"AI chat error: {e}")
+        await update.message.reply_text("🤖 Sorry, I couldn't process that. Please try again.", reply_markup=get_back_button())
+
+# ===============================================
+# CALLBACK QUERY HANDLER
+# ===============================================
+
+async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    
+    callback_map = {
+        "back_menu": start,
         "admin_dashboard": admin_dashboard,
+        "admin_analytics": admin_analytics,
         "admin_orders": admin_orders,
-        "admin_sales": admin_sales,
-        "admin_inventory": admin_inventory,
+        "admin_products": admin_products,
+        "admin_coupons": admin_coupons,
+        "admin_search": admin_search,
+        "admin_filter": admin_filter,
         "admin_export": admin_export,
         "admin_chart": admin_chart,
-        "user_products": user_products,
+        "admin_ai_chat": handle_ai_chat,
         "user_track_order": user_track_order,
+        "user_products": user_products,
         "user_about": user_about,
         "user_contact": user_contact,
+        "user_policies": user_policies,
+        "user_ai_chat": handle_ai_chat,
     }
     
-    if data in dispatch_map:
-        await dispatch_map[data](update, context)
-    elif data == "user_ai_chat":
-        session.state = "ai_chat"
-        await query.edit_message_text(
-            "💬 **AI Assistant Active**\n\nAsk me anything about our products!",
-            parse_mode=ParseMode.MARKDOWN,
-            reply_markup=get_back_button()
-        )
-    elif data == "back_menu":
-        if session.role == "admin":
-            text = f"👋 Welcome back, Admin **{user.first_name}**!\nChoose an option:"
-            reply_markup = get_admin_menu()
-        else:
-            text = f"👋 Salam, **{user.first_name}**! Welcome to Nongor Premium.\nHow can I help you today?"
-            reply_markup = get_user_menu()
-        
-        try:
-            await query.edit_message_text(text, parse_mode=ParseMode.MARKDOWN, reply_markup=reply_markup)
-        except BadRequest:
-            await query.message.reply_text(text, parse_mode=ParseMode.MARKDOWN, reply_markup=reply_markup)
-
-# ===============================================
-# MAIN EXECUTION
-# ===============================================
-
-def main():
-    if not TELEGRAM_BOT_TOKEN:
-        logger.error("TELEGRAM_BOT_TOKEN is missing!")
+    # Handle filter callbacks
+    if query.data.startswith("filter_"):
+        await handle_filter_callback(update, context)
         return
-
-    # We use post_init to start our own asyncio tasks
-    async def post_init(app: Application):
-        await db.connect()
-        asyncio.create_task(monitor_website(app))
-        asyncio.create_task(daily_report_scheduler(app))
-        asyncio.create_task(poll_orders_loop(app))
-        
-    application = Application.builder().token(TELEGRAM_BOT_TOKEN).post_init(post_init).build()
-
-    # Register Handlers
-    application.add_handler(CommandHandler("start", start))
-    application.add_handler(CommandHandler("menu", menu))
-    application.add_handler(CommandHandler("help", help_command))
     
-    # Admin
-    application.add_handler(CommandHandler("dashboard", admin_dashboard))
-    application.add_handler(CommandHandler("orders", admin_orders))
-    application.add_handler(CommandHandler("sales", admin_sales))
-    application.add_handler(CommandHandler("inventory", admin_inventory))
-    
-    # User Shortcuts
-    application.add_handler(CommandHandler("track", user_track_order))
-    application.add_handler(CommandHandler("products", user_products))
-    application.add_handler(CommandHandler("about", user_about))
-    application.add_handler(CommandHandler("contact", user_contact))
-    application.add_handler(CommandHandler("support", user_support))
-    
-    # Callback & Message
-    application.add_handler(CallbackQueryHandler(button_callback))
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-    
-    logger.info("Bot started in POLLING mode...")
-    
-    # Fix for Python 3.10+ "There is no current event loop"
-    try:
-        loop = asyncio.get_event_loop()
-    except RuntimeError:
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        
-    application.run_polling()
+    handler = callback_map.get(query.data)
+    if handler:
+        await handler(update, context)
+    else:
+        await query.edit_message_text("❌ Unknown action")
 
 # ===============================================
 # HELPER FUNCTIONS
 # ===============================================
 
+def get_status_emoji(status):
+    """Get emoji for order status"""
+    emoji_map = {
+        "Pending": "⏳",
+        "Processing": "🔄",
+        "Shipped": "🚚",
+        "Delivered": "✅",
+        "Cancelled": "❌",
+        "Returned": "↩️"
+    }
+    return emoji_map.get(status, "📦")
+
+async def send_error_message(update, action):
+    """Send standardized error message"""
+    text = f"❌ Error {action}. Please try again."
+    
+    if update.callback_query:
+        await update.callback_query.edit_message_text(text)
+    else:
+        await update.message.reply_text(text)
+
 async def generate_sales_chart():
     """Generate a sales chart image."""
     try:
         data = await db.get_daily_sales_stats(days=7)
-        if not data: return None
+        if not data or len(data) < 2:
+            return None
         
         dates = [row['date'] for row in data]
-        revenues = [row['revenue'] for row in data]
+        revenues = [float(row['revenue']) for row in data]
         
         plt.figure(figsize=(10, 6))
-        plt.plot(dates, revenues, marker='o', linestyle='-', color='#2ecc71')
-        plt.title('Sales Last 7 Days')
-        plt.xlabel('Date')
-        plt.ylabel('Revenue (BDT)')
+        plt.plot(dates, revenues, marker='o', linestyle='-', color='#2ecc71', linewidth=2)
+        plt.title('Sales Last 7 Days', fontsize=16, fontweight='bold')
+        plt.xlabel('Date', fontsize=12)
+        plt.ylabel('Revenue (৳)', fontsize=12)
         plt.grid(True, linestyle='--', alpha=0.7)
         plt.xticks(rotation=45)
         plt.tight_layout()
         
+        # Add value labels
+        for i, (date, rev) in enumerate(zip(dates, revenues)):
+            plt.text(i, rev, f'৳{rev:,.0f}', ha='center', va='bottom')
+        
         buf = io.BytesIO()
-        plt.savefig(buf, format='png')
+        plt.savefig(buf, format='png', dpi=100)
         buf.seek(0)
         plt.close()
         return buf
@@ -486,24 +1005,39 @@ async def generate_orders_csv():
     """Generate CSV file of all orders."""
     try:
         orders = await db.get_all_orders()
-        if not orders: return None
+        if not orders:
+            return None
         
         output = io.StringIO()
         writer = csv.writer(output)
-        writer.writerow(['Order ID', 'Customer', 'Phone', 'Product', 'Total', 'Status', 'Date'])
         
+        # Header
+        writer.writerow([
+            'Order ID', 'Customer', 'Phone', 'Email', 'Product', 
+            'Quantity', 'Total', 'Status', 'Delivery Status', 
+            'Payment Method', 'Payment Status', 'Coupon', 'Discount', 'Date'
+        ])
+        
+        # Data
         for o in orders:
             writer.writerow([
-                o['order_id'], 
-                o['customer_name'], 
-                o['phone'], 
-                o['product_name'], 
-                o['total'], 
-                o['status'], 
-                o['created_at']
+                o.get('order_id', ''),
+                o.get('customer_name', ''),
+                o.get('phone', ''),
+                o.get('customer_email', ''),
+                o.get('product_name', ''),
+                o.get('quantity', 0),
+                o.get('total_price', 0),
+                o.get('status', ''),
+                o.get('delivery_status', ''),
+                o.get('payment_method', ''),
+                o.get('payment_status', ''),
+                o.get('coupon_code', ''),
+                o.get('discount_amount', 0),
+                o.get('created_at', '')
             ])
-            
-        return io.BytesIO(output.getvalue().encode('utf-8'))
+        
+        return io.BytesIO(output.getvalue().encode('utf-8-sig'))  # UTF-8 with BOM for Excel
     except Exception as e:
         logger.error(f"CSV generation error: {e}")
         return None
@@ -523,7 +1057,7 @@ async def monitor_website(app: Application):
             async with httpx.AsyncClient() as client:
                 resp = await client.get(url, timeout=10)
                 if resp.status_code >= 400:
-                    msg = f"🚨 *WEBSITE ALERT!*\n\nURL: {url}\nStatus: {resp.status_code}\n\nAction required!"
+                    msg = f"🚨 **WEBSITE ALERT!**\n\nURL: {url}\nStatus: {resp.status_code}\n\nAction required!"
                     for admin_id in ADMIN_USER_IDS:
                         try:
                             await app.bot.send_message(chat_id=admin_id, text=msg, parse_mode=ParseMode.MARKDOWN)
@@ -531,29 +1065,23 @@ async def monitor_website(app: Application):
                             logger.error(f"Failed to send alert to {admin_id}: {e}")
         except Exception as e:
             logger.error(f"Monitor Error: {e}")
-            # Optional: Notify admin of monitor failure? Maybe too noisy.
-            
-        await asyncio.sleep(300) # 5 minutes
+        
+        await asyncio.sleep(300)  # 5 minutes
 
 async def daily_report_scheduler(app: Application):
     """Background task to send daily reports at 9:00 PM BD Time (UTC+6)."""
     from datetime import timedelta, timezone
     
     logger.info("Starting Daily Report Scheduler...")
-    
-    # BD Timezone = UTC+6
     bd_tz = timezone(timedelta(hours=6))
     
     while True:
         now = datetime.now(bd_tz)
         
-        # Target: 09:00 PM (21:00)
-        # Check if it's 21:00:xx
         if now.hour == 21 and now.minute == 0:
             await send_daily_report(app)
-            await asyncio.sleep(61) # Sleep to avoid duplicate sends
+            await asyncio.sleep(61)
         else:
-            # Sleep 30 seconds and check again
             await asyncio.sleep(30)
 
 async def send_daily_report(app: Application):
@@ -561,92 +1089,137 @@ async def send_daily_report(app: Application):
     try:
         today = await db.get_today_stats()
         weekly = await db.get_weekly_stats()
+        top_products = await db.get_top_products(days=1, limit=3)
         
         date_str = datetime.now().strftime('%Y-%m-%d')
-        report_text = (
-            f"📊 *DAILY BUSINESS REPORT* ({date_str})\n"
-            "═══════════════════════════════\n\n"
-            f"*KPIs:*\n📦 Orders: {today.get('order_count', 0)}\n💰 Revenue: ৳{today.get('total_revenue', 0):,.2f}\n\n"
-            f"*WEEKLY:*\n📦 Orders: {weekly.get('order_count', 0)}\n💰 Revenue: ৳{weekly.get('total_revenue', 0):,.2f}"
-        )
+        
+        report_text = f"""📊 **DAILY BUSINESS REPORT** ({date_str})
+═══════════════════════════════
+
+**TODAY'S PERFORMANCE:**
+📦 Orders: {today.get('order_count', 0)}
+💰 Revenue: ৳{today.get('total_revenue', 0):,.2f}
+📊 Avg Order: ৳{today.get('avg_order_value', 0):,.2f}
+
+**WEEKLY SUMMARY:**
+📦 Orders: {weekly.get('order_count', 0)}
+💰 Revenue: ৳{weekly.get('total_revenue', 0):,.2f}
+"""
+        
+        if top_products:
+            report_text += "\n**🏆 TOP PRODUCTS TODAY:**\n"
+            for i, p in enumerate(top_products, 1):
+                report_text += f"{i}. {p['product_name']}: ৳{p.get('revenue', 0):,.0f}\n"
         
         for admin_id in ADMIN_USER_IDS:
             try:
                 await app.bot.send_message(chat_id=admin_id, text=report_text, parse_mode=ParseMode.MARKDOWN)
             except Exception as e:
                 logger.error(f"Failed to send report to {admin_id}: {e}")
-                
     except Exception as e:
         logger.error(f"Report Generation Error: {e}")
 
 async def poll_orders_loop(app: Application):
-    """Check for new orders every minute."""
+    """Check for new orders every minute and notify admins."""
     logger.info("Starting Order Polling Loop...")
     last_id = await db.get_latest_order_id()
     
     while True:
         try:
-            # Check for orders > last_id
-            # optimize: fetch only IDs > last_id
-            # For now, we can reuse get_recent_orders but logic needs to be precise
-            # Let's add specific query logic here or use db method
-            # We need a method to fetch orders > ID. 
-            # Adding ad-hoc query here for simplicity as db class update was already done
-            query = "SELECT * FROM orders WHERE id > $1 ORDER BY id ASC"
+            query = """
+                SELECT 
+                    id, 
+                    order_id, 
+                    customer_name, 
+                    phone, 
+                    product_name, 
+                    total_price, 
+                    payment_method, 
+                    coupon_code,
+                    discount_amount,
+                    created_at 
+                FROM orders 
+                WHERE id > $1 
+                ORDER BY id ASC
+            """
             new_orders = await db.fetch_all(query, [last_id])
             
             for order in new_orders:
                 last_id = order['id']
-                msg = (
-                    f"🎉 *NEW ORDER RECEIVED!*\n"
-                    f"🆔 Order #{order['id']}\n"
-                    f"👤 {order['customer_name']}\n"
-                    f"💰 ৳{order['total']:,.0f}\n"
-                    f"📦 {order['product_name']}"
-                )
+                total = order.get('total_price', 0) or 0
+                
+                msg = f"""🎉 **NEW ORDER RECEIVED!**
+
+🆔 Order: {order.get('order_id', f"#{order['id']}")}
+👤 Customer: {order.get('customer_name', 'N/A')}
+📱 Phone: {order.get('phone', 'N/A')}
+💰 Total: ৳{total:,.2f}
+📦 Product: {order.get('product_name', 'N/A')}
+💳 Payment: {order.get('payment_method', 'N/A')}
+"""
+                
+                if order.get('coupon_code'):
+                    msg += f"🎟️ Coupon: {order['coupon_code']} (-৳{order.get('discount_amount', 0):,.0f})\n"
+                
+                msg += f"\n⏰ {order.get('created_at', datetime.now()).strftime('%Y-%m-%d %H:%M')}\n"
+                
                 for admin_id in ADMIN_USER_IDS:
                     try:
                         await app.bot.send_message(chat_id=admin_id, text=msg, parse_mode=ParseMode.MARKDOWN)
                     except Exception as e:
                         logger.error(f"Failed to notify {admin_id}: {e}")
-                        
         except Exception as e:
             logger.error(f"Polling Error: {e}")
-            
-        await asyncio.sleep(60)
+        
+        await asyncio.sleep(60)  # Check every minute
 
-async def admin_export(update: Update, context):
-    if update.effective_user.id not in ADMIN_USER_IDS: return
-    
-    message = update.message if update.message else update.callback_query.message
-    msg = await message.reply_text("⏳ Generating CSV export...")
-    
-    csv_file = await generate_orders_csv()
-    
-    if csv_file:
-        date_str = datetime.now().strftime('%Y-%m-%d')
-        await message.reply_document(
-            document=csv_file,
-            filename=f"nongor_orders_{date_str}.csv",
-            caption=f"📦 Order Export ({date_str})"
-        )
-        await msg.delete()
-    else:
-        await msg.edit_text("❌ Failed to generate export.")
+# ===============================================
+# MAIN
+# ===============================================
 
-async def admin_chart(update: Update, context):
-    if update.effective_user.id not in ADMIN_USER_IDS: return
+async def post_init(application: Application):
+    """Post-initialization hook to start background tasks."""
+    logger.info("Starting background tasks...")
+    asyncio.create_task(monitor_website(application))
+    asyncio.create_task(daily_report_scheduler(application))
+    asyncio.create_task(poll_orders_loop(application))
+    logger.info("✅ Background tasks started.")
+
+def main():
+    """Start the bot."""
+    logger.info("Starting Nongor Bot (Enhanced Version)...")
     
-    message = update.message if update.message else update.callback_query.message
-    msg = await message.reply_text("⏳ Generating Sales Chart...")
+    # Build application with post_init hook
+    application = (
+        Application.builder()
+        .token(TELEGRAM_BOT_TOKEN)
+        .post_init(post_init)
+        .build()
+    )
     
-    chart_img = await generate_sales_chart()
+    # Command handlers
+    application.add_handler(CommandHandler("start", start))
+    application.add_handler(CommandHandler("menu", start))
+    application.add_handler(CommandHandler("help", help_command))
+    application.add_handler(CommandHandler("dashboard", admin_dashboard))
+    application.add_handler(CommandHandler("orders", admin_orders))
+    application.add_handler(CommandHandler("export", admin_export))
+    application.add_handler(CommandHandler("search", admin_search))
+    application.add_handler(CommandHandler("products", user_products))
+    application.add_handler(CommandHandler("track", user_track_order))
+    application.add_handler(CommandHandler("about", user_about))
+    application.add_handler(CommandHandler("contact", user_contact))
     
-    if chart_img:
-        await message.reply_photo(photo=chart_img, caption="📊 **Weekly Sales Trend**", parse_mode=ParseMode.MARKDOWN)
-        await msg.delete()
-    else:
-        await msg.edit_text("❌ Failed to generate chart.")
+    # Callback and message handlers
+    application.add_handler(CallbackQueryHandler(handle_callback))
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+    
+    logger.info("✅ Bot configured successfully!")
+    logger.info(f"👥 Admin User IDs: {ADMIN_USER_IDS}")
+    logger.info(f"🤖 AI Enabled: {ai_initialized}")
+    
+    # Run bot
+    application.run_polling()
 
 if __name__ == "__main__":
     main()
