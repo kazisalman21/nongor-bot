@@ -3,3 +3,4 @@ __pycache__/
 *.pyc
 bot.log
 temp_bot_repo/
+node_modules/

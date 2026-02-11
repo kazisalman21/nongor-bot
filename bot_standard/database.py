@@ -6,6 +6,8 @@ Matches actual Nongor database schema with advanced features
 import asyncpg
 import logging
 import re
+import httpx
+from typing import Dict, Any, Optional
 from urllib.parse import urlparse
 from datetime import datetime, timedelta
 
@@ -791,3 +793,97 @@ class Database:
             ORDER BY revenue DESC
         """
         return await self.fetch_all(query, [days])
+    async def get_website_analytics(self) -> Optional[Dict]:
+        """Fetches live website data from the Vercel API endpoint."""
+        import os
+        api_url = f"{os.getenv('WEBSITE_URL')}/api/analytics"
+        api_key = os.getenv('ANALYTICS_API_KEY')
+        
+        if not api_key or not os.getenv('WEBSITE_URL'):
+            logger.warning("ANALYTICS_API_KEY or WEBSITE_URL not set. Website analytics skipped.")
+            return None
+
+        try:
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                headers = {'x-api-key': api_key}
+                response = await client.get(api_url, headers=headers)
+                
+                if response.status_code == 200:
+                    data = response.json()
+                    logger.info(f"Analytics fetched: {data.get('today', {}).get('visitors')} visitors today")
+                    return data
+                else:
+                    logger.error(f"Analytics API returned {response.status_code}: {response.text}")
+                    return None
+        except Exception as e:
+            logger.error(f"Failed to fetch website analytics: {e}")
+            return None
+
+    async def get_conversion_metrics(self) -> Dict:
+        """Combines website traffic with database sales for conversion analysis."""
+        # Get sales from DB (Last 24h)
+        today_stats = await self.get_today_stats()
+        orders_today = today_stats.get('order_count', 0)
+        
+        # Get traffic from GA4
+        website = await self.get_website_analytics()
+        
+        if not website:
+            return {
+                'mode': 'database_only',
+                'orders': orders_today,
+                'revenue': today_stats.get('total_revenue', 0)
+            }
+            
+        visitors = int(website.get('today', {}).get('visitors', 0))
+        
+        return {
+            'mode': 'full_analytics',
+            'visitors': visitors,
+            'orders': orders_today,
+            'conversion_rate': f"{((orders_today / visitors) * 100):.1f}" if visitors > 0 else "0.0",
+            'abandoned_carts': website.get('funnel', {}).get('checkout_started', 0) - website.get('funnel', {}).get('purchases', 0),
+            'funnel': website.get('funnel'),
+            'top_pages': website.get('topPages'),
+            'traffic_sources': website.get('trafficSources'),
+            'bounce_rate': website.get('today', {}).get('bounceRate'),
+            'avg_session_duration': website.get('today', {}).get('avgSessionDuration')
+        }
+
+    async def get_business_intelligence(self) -> Dict:
+        """MASTER METHOD: Combines ALL data sources for comprehensive business analysis."""
+        import asyncio
+        
+        results = await asyncio.gather(
+            self.get_today_stats(),
+            self.get_weekly_stats(),
+            self.get_monthly_stats(),
+            self.get_top_products(days=30, limit=5),
+            self.get_inventory_alerts(),
+            self.get_revenue_by_category(days=30),
+            self.get_conversion_metrics(),
+            return_exceptions=True
+        )
+        
+        # Unpack results
+        today, weekly, monthly, top_products, low_stock, categories, conversion = results
+        
+        # Handle exceptions
+        if isinstance(conversion, Exception):
+            logger.error(f"Conversion metrics failed: {conversion}")
+            conversion = {'mode': 'error', 'warning': str(conversion)}
+        
+        return {
+            'sales': {
+                'today': today,
+                'weekly': weekly,
+                'monthly': monthly
+            },
+            'products': {
+                'top_sellers': top_products,
+                'low_stock_alerts': low_stock
+            },
+            'categories': categories,
+            'conversion': conversion,
+            'generated_at': datetime.now().isoformat()
+        }
