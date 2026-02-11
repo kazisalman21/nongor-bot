@@ -92,10 +92,16 @@ BUSINESS_HOURS = {
     "response_times": {"messenger": "~2 minutes", "email": "Within 24 hours"}
 }
 
+import httpx
+from telegram.ext import JobQueue
+
 DELIVERY_POLICIES = {
     "dhaka": {"time": "2-3 days", "charge": 70, "free_above": 1000},
     "outside": {"time": "3-5 days", "charge": 130, "free_above": 2000}
 }
+
+WEBSITE_URL = os.getenv("WEBSITE_URL", "https://nongor-brand.vercel.app")
+
 
 # ===============================================
 # SESSION MANAGEMENT
@@ -1244,6 +1250,91 @@ async def poll_orders_loop(app: Application):
         
         await asyncio.sleep(60)  # Check every minute
 
+async def monitor_website_job(context: ContextTypes.DEFAULT_TYPE):
+    """Background job to check website status"""
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            response = await client.get(WEBSITE_URL)
+            status = response.status_code
+            
+            # If status is not 200, ALERT ADMINS
+            if status != 200:
+                for admin_id in ADMIN_USER_IDS:
+                    try:
+                        await context.bot.send_message(
+                            chat_id=admin_id,
+                            text=f"🚨 **CRITICAL ALERT**: Website is DOWN!\n\nStatus Code: {status}\nURL: {WEBSITE_URL}",
+                            parse_mode=ParseMode.MARKDOWN
+                        )
+                    except Exception:
+                        pass
+            else:
+                # Optional: Log success silently
+                logger.info(f"Website Monitor: {WEBSITE_URL} is UP (200 OK)")
+
+    except Exception as e:
+        logger.error(f"Website Monitor Error: {e}")
+        # Notify admin of monitoring failure
+        for admin_id in ADMIN_USER_IDS:
+            try:
+                await context.bot.send_message(
+                    chat_id=admin_id,
+                    text=f"⚠️ **Monitor Alert**: Could not reach website.\nError: {str(e)}",
+                    parse_mode=ParseMode.MARKDOWN
+                )
+            except Exception:
+                pass
+
+
+async def handle_monitor_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Admin command to control monitoring"""
+    if update.effective_user.id not in ADMIN_USER_IDS:
+        return
+
+    args = context.args
+    if not args:
+        # Check status NOW
+        async with httpx.AsyncClient() as client:
+            try:
+                start = datetime.now()
+                resp = await client.get(WEBSITE_URL)
+                duration = (datetime.now() - start).total_seconds() * 1000
+                status_emoji = "✅" if resp.status_code == 200 else "❌"
+                
+                await update.message.reply_text(
+                    f"{status_emoji} **Website Status**\n"
+                    f"URL: {WEBSITE_URL}\n"
+                    f"Code: `{resp.status_code}`\n"
+                    f"Latency: `{duration:.0f}ms`\n\n"
+                    "Use `/monitor on` to enable auto-alerts.",
+                    parse_mode=ParseMode.MARKDOWN
+                )
+            except Exception as e:
+                await update.message.reply_text(f"❌ Connection Failed: {e}")
+        return
+
+    action = args[0].lower()
+    job_queue = context.job_queue
+    
+    if action == "on":
+        # Check if already running
+        current_jobs = job_queue.get_jobs_by_name("website_monitor")
+        if current_jobs:
+            await update.message.reply_text("✅ Monitoring is already active.")
+            return
+            
+        # Add job: Check every 10 minutes (600 seconds)
+        job_queue.run_repeating(monitor_website_job, interval=600, first=10, name="website_monitor")
+        await update.message.reply_text("📡 **Monitoring ENABLED**. Checking every 10 minutes.")
+        
+    elif action == "off":
+        current_jobs = job_queue.get_jobs_by_name("website_monitor")
+        for job in current_jobs:
+            job.schedule_removal()
+        await update.message.reply_text("🔕 **Monitoring DISABLED**.")
+    else:
+        await update.message.reply_text("Usage: `/monitor` (check once), `/monitor on`, `/monitor off`")
+
 # ===============================================
 # MAIN
 # ===============================================
@@ -1276,6 +1367,7 @@ def main():
     application.add_handler(CommandHandler("orders", admin_orders))
     application.add_handler(CommandHandler("export", admin_export))
     application.add_handler(CommandHandler("search", admin_search))
+    application.add_handler(CommandHandler("monitor", handle_monitor_command))
     application.add_handler(CommandHandler("products", user_products))
     application.add_handler(CommandHandler("track", user_track_order))
     application.add_handler(CommandHandler("about", user_about))
