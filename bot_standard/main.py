@@ -21,7 +21,7 @@ sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 from database import Database
 
 # 3rd Party Imports
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, ReplyKeyboardRemove, InputMediaPhoto, InputMediaVideo
 from telegram.ext import (
     Application, CommandHandler, MessageHandler, 
     CallbackQueryHandler, filters, ContextTypes
@@ -91,23 +91,23 @@ if AI_AVAILABLE and GEMINI_API_KEY:
     try:
         genai.configure(api_key=GEMINI_API_KEY)
         
-        # 1. Customer AI (Exp v2.0) - General Chat
-        customer_ai = genai.GenerativeModel('gemini-2.0-flash-exp')
+        # 1. Customer AI (Lite v2.5) - Fastest & Cheapest for High Volume
+        customer_ai = genai.GenerativeModel('gemini-2.5-flash-lite')
         
         # 2. Product Search (Lite v2.5) - Intelligent Discovery
         search_ai = genai.GenerativeModel('gemini-2.5-flash-lite')
         
-        # 3. Order Tracking (Pro v2.0) - Strategic Analysis
-        tracking_ai = genai.GenerativeModel('gemini-2.0-pro-exp')
+        # 3. Order Tracking (Lite Latest) - Quick Status Lookups
+        tracking_ai = genai.GenerativeModel('gemini-flash-lite-latest')
         
         # 4. Daily Reports (Preview v3.0) - Deep Insights
         report_ai = genai.GenerativeModel('gemini-3-flash-preview')
         
-        # 5. Admin AI (Stable) - Business Manager
-        admin_ai = genai.GenerativeModel('gemini-flash-latest')
+        # 5. Admin AI (Preview v3.0) - Strategic Business Reasoning
+        admin_ai = genai.GenerativeModel('gemini-3-flash-preview')
         
-        # Fallback (Most Reliable)
-        fallback_ai = genai.GenerativeModel('gemini-1.5-flash')
+        # Fallback (Most Stable)
+        fallback_ai = genai.GenerativeModel('gemini-flash-latest')
         
         ai_initialized = True
         logger.info("✅ AI System initialized with 5 specialized models (Multi-Model Strategy)")
@@ -247,7 +247,8 @@ def get_admin_menu():
         [InlineKeyboardButton("📤 Export CSV", callback_data="admin_export"),
          InlineKeyboardButton("📊 Sales Chart", callback_data="admin_chart")],
         [InlineKeyboardButton("🖥️ Monitor", callback_data="admin_monitor"),
-         InlineKeyboardButton("👥 Admins", callback_data="admin_admins")]
+         InlineKeyboardButton("👥 Admins", callback_data="admin_admins")],
+        [InlineKeyboardButton("📢 Broadcast", callback_data='admin_broadcast_prompt')]
     ]
     if ai_initialized:
         rows.append([InlineKeyboardButton("🤖 AI Assistant", callback_data="admin_ai_chat")])
@@ -730,7 +731,7 @@ async def admin_manage_admins(update: Update, context: ContextTypes.DEFAULT_TYPE
         if removable:
             rows.append([InlineKeyboardButton("🗑️ Remove Admin", callback_data="admin_remove_list")])
         
-        rows.append([InlineKeyboardButton("◀️ Back", callback_data="back_menu")])
+        rows.append([InlineKeyboardButton("◀️ Back", callback_data="admin_admins")])
         reply_markup = InlineKeyboardMarkup(rows)
         
         if update.callback_query:
@@ -831,29 +832,20 @@ async def admin_remove_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         await update.message.reply_text(text, parse_mode=ParseMode.MARKDOWN, reply_markup=reply_markup)
 
-async def handle_remove_admin(update: Update, context: ContextTypes.DEFAULT_TYPE, admin_id):
-    """Handle admin removal confirmation."""
-    if update.effective_user.id not in ADMIN_USER_IDS:
-        return
+async def handle_remove_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle admin removal."""
+    query = update.callback_query
+    # Extract ID from 'admin_remove_<id>'
+    target_id = int(query.data.split('_')[2])
     
-    success = await db.remove_admin(admin_id)
-    
+    success = await db.remove_admin(target_id)
     if success:
+        # Refresh dynamic list
         await refresh_admin_list()
-        # Update session role if user is online
-        if admin_id in user_sessions:
-            user_sessions[admin_id].role = "user"
-        text = f"✅ Admin `{admin_id}` has been removed."
+        await query.answer("✅ Admin removed!")
+        await admin_manage_admins(update, context)
     else:
-        text = f"❌ Cannot remove admin `{admin_id}`. They may be a Super Admin."
-    
-    reply_markup = InlineKeyboardMarkup([[InlineKeyboardButton("👥 Admin List", callback_data="admin_admins"),
-                                          InlineKeyboardButton("◀️ Menu", callback_data="back_menu")]])
-    
-    if update.callback_query:
-        await update.callback_query.edit_message_text(text, parse_mode=ParseMode.MARKDOWN, reply_markup=reply_markup)
-    else:
-        await update.message.reply_text(text, parse_mode=ParseMode.MARKDOWN, reply_markup=reply_markup)
+        await query.answer("❌ Failed! Cannot remove Super Admin or invalid ID.", show_alert=True)
 
 # ===============================================
 # USER HANDLERS
@@ -1100,6 +1092,11 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await handle_add_admin_input(update, context, user_text)
         return
     
+    # Admin: Broadcast Message
+    if session.state == 'waiting_broadcast_msg':
+        await handle_broadcast_message(update, context)
+        return
+    
     # Handle order ID input
     if session.state == "waiting_order_id":
         await handle_order_tracking(update, context, user_text)
@@ -1342,6 +1339,9 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "admin_admins": admin_manage_admins,
         "admin_add_admin": admin_add_admin_prompt,
         "admin_remove_list": admin_remove_list,
+        "admin_broadcast_prompt": admin_broadcast_prompt,
+        "admin_broadcast_confirm": execute_broadcast,
+        "admin_broadcast_cancel": cancel_broadcast,
         "user_track_order": user_track_order,
         "user_products": user_products,
         "user_about": user_about,
@@ -1358,11 +1358,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     # Handle admin remove callbacks (admin_remove_<user_id>)
     if query.data.startswith("admin_remove_"):
-        try:
-            admin_id = int(query.data.replace("admin_remove_", ""))
-            await handle_remove_admin(update, context, admin_id)
-        except ValueError:
-            await query.edit_message_text("❌ Invalid admin ID")
+        await handle_remove_admin(update, context)
         return
     
     handler = callback_map.get(query.data)
@@ -1370,6 +1366,142 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await handler(update, context)
     else:
         await query.edit_message_text("❌ Unknown action")
+
+# ===============================================
+# BROADCAST SYSTEM
+# ===============================================
+
+async def admin_broadcast_prompt(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Prompt admin for broadcast message."""
+    query = update.callback_query
+    await query.answer()
+    
+    user_id = update.effective_user.id
+    if user_id not in ADMIN_USER_IDS:
+        await query.answer("❌ Authorized personnel only.", show_alert=True)
+        return
+
+    session = get_session(user_id)
+    session.state = 'waiting_broadcast_msg'
+    
+    text = (
+        "📢 **Broadcast Setup**\n\n"
+        "Send me the message you want to broadcast to ALL users.\n"
+        "You can send:\n"
+        "• Text\n"
+        "• Photo (with caption)\n"
+        "• Video (with caption)\n\n"
+        "Type /cancel to abort."
+    )
+    await query.edit_message_text(text, parse_mode=ParseMode.MARKDOWN)
+
+async def handle_broadcast_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Capture broadcast message content and ask for confirmation."""
+    user_id = update.effective_user.id
+    
+    # Save message content to context for later
+    message = update.message
+    broadcast_data = {'type': 'text'}
+    
+    if message.text:
+        broadcast_data['text'] = message.text
+    elif message.photo:
+        broadcast_data['type'] = 'photo'
+        broadcast_data['file_id'] = message.photo[-1].file_id
+        broadcast_data['caption'] = message.caption
+    elif message.video:
+        broadcast_data['type'] = 'video'
+        broadcast_data['file_id'] = message.video.file_id
+        broadcast_data['caption'] = message.caption
+    else:
+        await update.message.reply_text("❌ Unsupported media type. Send text, photo, or video.")
+        return
+
+    context.user_data['broadcast_preview'] = broadcast_data
+    
+    # Get user count
+    all_users = await db.get_all_user_ids()
+    count = len(all_users)
+    
+    keyboard = [
+        [
+            InlineKeyboardButton("✅ Send Broadcast", callback_data='admin_broadcast_confirm'),
+            InlineKeyboardButton("❌ Cancel", callback_data='admin_broadcast_cancel')
+        ]
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    
+    msg = (
+        f"📢 **Broadcast Preview**\n\n"
+        f"Target Audience: **{count} users**\n\n"
+        "Are you sure you want to send this?"
+    )
+    
+    # Send preview based on type
+    if broadcast_data['type'] == 'text':
+        await update.message.reply_text(f"Preview:\n\n{broadcast_data['text']}")
+    elif broadcast_data['type'] == 'photo':
+        await update.message.reply_photo(photo=broadcast_data['file_id'], caption=broadcast_data['caption'])
+    elif broadcast_data['type'] == 'video':
+        await update.message.reply_video(video=broadcast_data['file_id'], caption=broadcast_data['caption'])
+        
+    await update.message.reply_text(msg, reply_markup=reply_markup, parse_mode=ParseMode.MARKDOWN)
+    
+    # Clear state but keep context data
+    session = get_session(user_id)
+    session.state = "menu"
+
+async def execute_broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Execute the broadcast loop."""
+    query = update.callback_query
+    await query.answer()
+    
+    broadcast_data = context.user_data.get('broadcast_preview')
+    if not broadcast_data:
+        await query.edit_message_text("❌ Session expired. Please start over.")
+        return
+        
+    user_ids = await db.get_all_user_ids()
+    total = len(user_ids)
+    sent = 0
+    failed = 0
+    
+    await query.edit_message_text(f"🚀 **Broadcasting to {total} users...**\nThis may take a while.")
+    
+    # Helper to send (avoids duplicating logic)
+    async def send_to_user(uid):
+        try:
+            if broadcast_data['type'] == 'text':
+                await context.bot.send_message(chat_id=uid, text=broadcast_data['text'])
+            elif broadcast_data['type'] == 'photo':
+                await context.bot.send_photo(chat_id=uid, photo=broadcast_data['file_id'], caption=broadcast_data['caption'])
+            elif broadcast_data['type'] == 'video':
+                await context.bot.send_video(chat_id=uid, video=broadcast_data['file_id'], caption=broadcast_data['caption'])
+            return True
+        except Exception:
+            return False
+
+    # Send loop with rate limiting
+    for uid in user_ids:
+        if await send_to_user(uid):
+            sent += 1
+        else:
+            failed += 1
+        await asyncio.sleep(0.05)  # 20 msgs/sec max (safe limit)
+        
+    await context.bot.send_message(
+        chat_id=update.effective_chat.id,
+        text=f"✅ **Broadcast Complete**\n\nSent: {sent}\nFailed: {failed}\nTotal: {total}",
+        parse_mode=ParseMode.MARKDOWN
+    )
+    context.user_data.pop('broadcast_preview', None)
+
+async def cancel_broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Cancel broadcast."""
+    query = update.callback_query
+    await query.answer("Broadcast cancelled.")
+    await query.edit_message_text("❌ Broadcast cancelled.")
+    context.user_data.pop('broadcast_preview', None)
 
 # ===============================================
 # HELPER FUNCTIONS
@@ -1396,13 +1528,9 @@ async def send_error_message(update, action):
     else:
         await update.message.reply_text(text)
 
-async def generate_sales_chart():
-    """Generate a sales chart image."""
+def _create_chart_image(data):
+    """Sync helper to generate chart image (runs in executor)."""
     try:
-        data = await db.get_daily_sales_stats(days=7)
-        if not data or len(data) < 2:
-            return None
-        
         dates = [row['date'] for row in data]
         revenues = [float(row['revenue']) for row in data]
         
@@ -1425,16 +1553,26 @@ async def generate_sales_chart():
         plt.close()
         return buf
     except Exception as e:
+        logger.error(f"Chart plotting error: {e}")
+        return None
+
+async def generate_sales_chart():
+    """Generate a sales chart image asynchronously."""
+    try:
+        data = await db.get_daily_sales_stats(days=7)
+        if not data or len(data) < 2:
+            return None
+        
+        # Run blocking matplotlib code in thread pool
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(None, _create_chart_image, data)
+    except Exception as e:
         logger.error(f"Chart generation error: {e}")
         return None
 
-async def generate_orders_csv():
-    """Generate CSV file of all orders."""
+def _create_csv_string(orders):
+    """Sync helper to create CSV string (runs in executor)."""
     try:
-        orders = await db.get_all_orders()
-        if not orders:
-            return None
-        
         output = io.StringIO()
         writer = csv.writer(output)
         
@@ -1466,6 +1604,20 @@ async def generate_orders_csv():
         
         return io.BytesIO(output.getvalue().encode('utf-8-sig'))  # UTF-8 with BOM for Excel
     except Exception as e:
+        logger.error(f"CSV writing error: {e}")
+        return None
+
+async def generate_orders_csv():
+    """Generate CSV file of all orders asynchronously."""
+    try:
+        orders = await db.get_all_orders()
+        if not orders:
+            return None
+        
+        # Run blocking CSV writing code in thread pool
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(None, _create_csv_string, orders)
+    except Exception as e:
         logger.error(f"CSV generation error: {e}")
         return None
 
@@ -1473,27 +1625,7 @@ async def generate_orders_csv():
 # BACKGROUND TASKS
 # ===============================================
 
-async def monitor_website(app: Application):
-    """Background task to check website health every 5 minutes."""
-    import httpx
-    url = CONTACT_INFO['website']
-    logger.info(f"Starting Website Monitor for {url}...")
-    
-    while True:
-        try:
-            async with httpx.AsyncClient() as client:
-                resp = await client.get(url, timeout=10)
-                if resp.status_code >= 400:
-                    msg = f"🚨 **WEBSITE ALERT!**\n\nURL: {url}\nStatus: {resp.status_code}\n\nAction required!"
-                    for admin_id in ADMIN_USER_IDS:
-                        try:
-                            await app.bot.send_message(chat_id=admin_id, text=msg, parse_mode=ParseMode.MARKDOWN)
-                        except Exception as e:
-                            logger.error(f"Failed to send alert to {admin_id}: {e}")
-        except Exception as e:
-            logger.error(f"Monitor Error: {e}")
-        
-        await asyncio.sleep(300)  # 5 minutes
+# monitor_website removed - using monitor_website_job instead
 
 async def daily_report_scheduler(app: Application):
     """Background task to send daily reports at 9:00 PM BD Time (UTC+6)."""
@@ -1559,6 +1691,54 @@ async def send_daily_report(app: Application):
                 logger.error(f"Failed to send report to {admin_id}: {e}")
     except Exception as e:
         logger.error(f"Report Generation Error: {e}")
+
+async def backup_scheduler(app: Application):
+    """Background task to backup database daily at 3:00 AM."""
+    logger.info("Starting Backup Scheduler...")
+    while True:
+        now = datetime.now()
+        # Target: 3:00 AM
+        target = now.replace(hour=3, minute=0, second=0, microsecond=0)
+        if now >= target:
+            target = target.replace(day=target.day + 1)
+            
+        wait_seconds = (target - now).total_seconds()
+        logger.info(f"Next backup in {wait_seconds/3600:.1f} hours")
+        await asyncio.sleep(wait_seconds)
+        
+        # Execute Backup
+        try:
+            data = await db.get_data_dump()
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            filename = f"backup_{timestamp}.json"
+            zip_filename = f"backup_{timestamp}.zip"
+            
+            # Write JSON
+            with open(filename, 'w', encoding='utf-8') as f:
+                json.dump(data, f, indent=2, default=str)
+                
+            # Zip it
+            with zipfile.ZipFile(zip_filename, 'w', zipfile.ZIP_DEFLATED) as zipf:
+                zipf.write(filename)
+                
+            # Send to Super Admins (from .env)
+            for admin_id in ENV_ADMIN_IDS:
+                try:
+                    await app.bot.send_document(
+                        chat_id=admin_id,
+                        document=open(zip_filename, 'rb'),
+                        caption=f"🗄️ **Database Backup**\n📅 {datetime.now().strftime('%Y-%m-%d %H:%M')}",
+                        parse_mode=ParseMode.MARKDOWN
+                    )
+                except Exception as e:
+                    logger.error(f"Failed to send backup to {admin_id}: {e}")
+            
+            # Cleanup
+            if os.path.exists(filename): os.remove(filename)
+            if os.path.exists(zip_filename): os.remove(zip_filename)
+            
+        except Exception as e:
+            logger.error(f"Backup Error: {e}")
 
 async def poll_orders_loop(app: Application):
     """Check for new orders every minute and notify admins."""
@@ -1727,8 +1907,10 @@ async def post_init(application: Application):
     await db.seed_super_admins(ENV_ADMIN_IDS)
     await refresh_admin_list()
     
-    asyncio.create_task(monitor_website(application))
+    # Removed redundant monitor_website task
+    # To enable monitoring: use /monitor on command
     asyncio.create_task(daily_report_scheduler(application))
+    asyncio.create_task(backup_scheduler(application))
     asyncio.create_task(poll_orders_loop(application))
     logger.info("✅ Background tasks started.")
 

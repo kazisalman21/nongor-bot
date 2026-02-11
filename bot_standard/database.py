@@ -798,20 +798,49 @@ class Database:
             return False
         if check['is_super_admin']:
             return False
-        await self.execute("DELETE FROM admins WHERE user_id = $1", [user_id])
+        query = "DELETE FROM admins WHERE user_id = $1"
+        await self.execute(query, [user_id])
         return True
 
     async def is_admin(self, user_id):
         """Check if a user is an admin."""
-        result = await self.fetch_one(
-            "SELECT user_id FROM admins WHERE user_id = $1", [user_id]
+        res = await self.fetch_one(
+            "SELECT 1 FROM admins WHERE user_id = $1", [user_id]
         )
-        return result is not None
+        return res is not None
 
     async def get_admin_ids(self):
-        """Get list of all admin user IDs."""
+        """Get a set of all admin user IDs."""
         rows = await self.fetch_all("SELECT user_id FROM admins")
-        return [r['user_id'] for r in rows] if rows else []
+        return {r['user_id'] for r in rows}
+
+    # =========================================
+    # ADVANCED FEATURES (BACKUP & BROADCAST)
+    # =========================================
+
+    async def get_all_user_ids(self):
+        """Get all user IDs for broadcasting."""
+        rows = await self.fetch_all("SELECT user_id FROM users")
+        return [r['user_id'] for r in rows]
+
+    async def get_data_dump(self):
+        """Dump all critical tables for backup."""
+        data = {}
+        tables = ['users', 'orders', 'products', 'coupons', 'admins']
+        
+        for table in tables:
+            rows = await self.fetch_all(f"SELECT * FROM {table}")
+            # Convert record objects to dicts and handle datetime serialization
+            table_data = []
+            for row in rows:
+                row_dict = dict(row)
+                for k, v in row_dict.items():
+                    if isinstance(v, (datetime, timedelta)):
+                        row_dict[k] = str(v)
+                table_data.append(row_dict)
+            data[table] = table_data
+            
+        return data
 
     # =========================================
     # ADMIN UTILITIES
