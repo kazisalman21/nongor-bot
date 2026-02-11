@@ -46,10 +46,23 @@ except ImportError:
 # GLOBAL STATE & CONFIG
 # ===============================================
 
-ADMIN_USER_IDS = [
+# Seed admin IDs from .env (these become super admins)
+ENV_ADMIN_IDS = [
     int(i.strip()) for i in os.getenv("ADMIN_USER_IDS", "").split(",") 
     if i.strip().isdigit()
 ]
+# Live admin list — loaded from DB on startup, refreshed on add/remove
+ADMIN_USER_IDS = set(ENV_ADMIN_IDS)
+
+async def refresh_admin_list():
+    """Reload admin list from database."""
+    global ADMIN_USER_IDS
+    try:
+        db_admins = await db.get_admin_ids()
+        ADMIN_USER_IDS = set(db_admins) | set(ENV_ADMIN_IDS)
+        logger.info(f"Admin list refreshed: {ADMIN_USER_IDS}")
+    except Exception as e:
+        logger.error(f"Failed to refresh admin list: {e}")
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 DATABASE_URL = os.getenv("DATABASE_URL") or os.getenv("NETLIFY_DATABASE_URL")
@@ -233,7 +246,8 @@ def get_admin_menu():
          InlineKeyboardButton("🎟️ Coupons", callback_data="admin_coupons")],
         [InlineKeyboardButton("📤 Export CSV", callback_data="admin_export"),
          InlineKeyboardButton("📊 Sales Chart", callback_data="admin_chart")],
-        [InlineKeyboardButton("🖥️ Monitor", callback_data="admin_monitor")]
+        [InlineKeyboardButton("🖥️ Monitor", callback_data="admin_monitor"),
+         InlineKeyboardButton("👥 Admins", callback_data="admin_admins")]
     ]
     if ai_initialized:
         rows.append([InlineKeyboardButton("🤖 AI Assistant", callback_data="admin_ai_chat")])
@@ -323,6 +337,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 /export - Export CSV
 /search - Search orders
 /products - Product list
+/admins - Manage admins
 /monitor - Website status
 /help - This help message
 """
@@ -678,6 +693,169 @@ async def admin_chart(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await msg.edit_text("❌ Failed to generate chart.")
 
 # ===============================================
+# ADMIN MANAGEMENT HANDLERS
+# ===============================================
+
+async def admin_manage_admins(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Show admin list with add/remove options."""
+    if update.effective_user.id not in ADMIN_USER_IDS:
+        return
+    
+    try:
+        admins = await db.get_all_admins()
+        
+        text = "👥 **ADMIN MANAGEMENT**\n━━━━━━━━━━━━━━━━━━━━━━\n\n"
+        
+        if not admins:
+            text += "No admins found in database.\n"
+        else:
+            for i, a in enumerate(admins, 1):
+                badge = "👑" if a.get('is_super_admin') else "🔹"
+                name = a.get('first_name') or 'Unknown'
+                username = f"@{a['username']}" if a.get('username') else 'no username'
+                text += f"{badge} **{name}** ({username})\n"
+                text += f"   🆔 `{a['user_id']}`\n"
+                if a.get('is_super_admin'):
+                    text += "   🛡️ Super Admin\n"
+                text += "─────────────────\n"
+        
+        text += f"\n📊 Total Admins: {len(admins)}\n"
+        
+        rows = [
+            [InlineKeyboardButton("➕ Add Admin", callback_data="admin_add_admin")],
+        ]
+        
+        # Add remove buttons for non-super admins
+        removable = [a for a in admins if not a.get('is_super_admin')]
+        if removable:
+            rows.append([InlineKeyboardButton("🗑️ Remove Admin", callback_data="admin_remove_list")])
+        
+        rows.append([InlineKeyboardButton("◀️ Back", callback_data="back_menu")])
+        reply_markup = InlineKeyboardMarkup(rows)
+        
+        if update.callback_query:
+            await update.callback_query.edit_message_text(text, parse_mode=ParseMode.MARKDOWN, reply_markup=reply_markup)
+        else:
+            await update.message.reply_text(text, parse_mode=ParseMode.MARKDOWN, reply_markup=reply_markup)
+    
+    except Exception as e:
+        logger.error(f"Admin management error: {e}")
+        await send_error_message(update, "loading admin list")
+
+async def admin_add_admin_prompt(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Prompt admin to enter the new admin's Telegram user ID."""
+    if update.effective_user.id not in ADMIN_USER_IDS:
+        return
+    
+    session = get_session(update.effective_user.id)
+    session.state = "waiting_admin_id"
+    
+    text = (
+        "➕ **ADD NEW ADMIN**\n━━━━━━━━━━━━━━━━━━━━━━\n\n"
+        "Send the Telegram **User ID** of the person you want to make admin.\n\n"
+        "💡 *How to find a User ID:*\n"
+        "Ask them to message @userinfobot or check their profile in /start.\n\n"
+        "Type the numeric User ID:"
+    )
+    reply_markup = InlineKeyboardMarkup([[InlineKeyboardButton("❌ Cancel", callback_data="admin_admins")]])
+    
+    if update.callback_query:
+        await update.callback_query.edit_message_text(text, parse_mode=ParseMode.MARKDOWN, reply_markup=reply_markup)
+    else:
+        await update.message.reply_text(text, parse_mode=ParseMode.MARKDOWN, reply_markup=reply_markup)
+
+async def handle_add_admin_input(update: Update, context: ContextTypes.DEFAULT_TYPE, user_text):
+    """Process the admin ID entered by the user."""
+    session = get_session(update.effective_user.id)
+    session.state = "menu"
+    
+    # Validate input is a number
+    if not user_text.isdigit():
+        await update.message.reply_text(
+            "❌ Invalid User ID. Please enter a numeric Telegram User ID.",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔄 Try Again", callback_data="admin_add_admin"),
+                                                InlineKeyboardButton("◀️ Back", callback_data="admin_admins")]])
+        )
+        return
+    
+    new_admin_id = int(user_text)
+    added_by = update.effective_user.id
+    
+    # Try to get user info from the users table
+    user_info = await db.fetch_one("SELECT username, first_name FROM users WHERE user_id = $1", [new_admin_id])
+    username = user_info['username'] if user_info else None
+    first_name = user_info['first_name'] if user_info else None
+    
+    success = await db.add_admin(new_admin_id, added_by, username, first_name)
+    
+    if success:
+        await refresh_admin_list()
+        # Also update session role if this user is online
+        if new_admin_id in user_sessions:
+            user_sessions[new_admin_id].role = "admin"
+        
+        display_name = first_name or username or str(new_admin_id)
+        text = f"✅ **Admin Added!**\n\n👤 **{display_name}** (`{new_admin_id}`)\nis now an admin."
+    else:
+        text = f"⚠️ User `{new_admin_id}` is already an admin."
+    
+    reply_markup = InlineKeyboardMarkup([[InlineKeyboardButton("👥 Admin List", callback_data="admin_admins"),
+                                          InlineKeyboardButton("◀️ Menu", callback_data="back_menu")]])
+    await update.message.reply_text(text, parse_mode=ParseMode.MARKDOWN, reply_markup=reply_markup)
+
+async def admin_remove_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Show list of removable admins (non-super admins)."""
+    if update.effective_user.id not in ADMIN_USER_IDS:
+        return
+    
+    admins = await db.get_all_admins()
+    removable = [a for a in admins if not a.get('is_super_admin')]
+    
+    if not removable:
+        text = "🗑️ **REMOVE ADMIN**\n\nNo removable admins. Super Admins cannot be removed."
+        reply_markup = InlineKeyboardMarkup([[InlineKeyboardButton("◀️ Back", callback_data="admin_admins")]])
+    else:
+        text = "🗑️ **REMOVE ADMIN**\n━━━━━━━━━━━━━━━━━━━━━━\n\nSelect an admin to remove:\n"
+        rows = []
+        for a in removable:
+            name = a.get('first_name') or a.get('username') or str(a['user_id'])
+            rows.append([InlineKeyboardButton(
+                f"❌ {name} ({a['user_id']})",
+                callback_data=f"admin_remove_{a['user_id']}"
+            )])
+        rows.append([InlineKeyboardButton("◀️ Back", callback_data="admin_admins")])
+        reply_markup = InlineKeyboardMarkup(rows)
+    
+    if update.callback_query:
+        await update.callback_query.edit_message_text(text, parse_mode=ParseMode.MARKDOWN, reply_markup=reply_markup)
+    else:
+        await update.message.reply_text(text, parse_mode=ParseMode.MARKDOWN, reply_markup=reply_markup)
+
+async def handle_remove_admin(update: Update, context: ContextTypes.DEFAULT_TYPE, admin_id):
+    """Handle admin removal confirmation."""
+    if update.effective_user.id not in ADMIN_USER_IDS:
+        return
+    
+    success = await db.remove_admin(admin_id)
+    
+    if success:
+        await refresh_admin_list()
+        # Update session role if user is online
+        if admin_id in user_sessions:
+            user_sessions[admin_id].role = "user"
+        text = f"✅ Admin `{admin_id}` has been removed."
+    else:
+        text = f"❌ Cannot remove admin `{admin_id}`. They may be a Super Admin."
+    
+    reply_markup = InlineKeyboardMarkup([[InlineKeyboardButton("👥 Admin List", callback_data="admin_admins"),
+                                          InlineKeyboardButton("◀️ Menu", callback_data="back_menu")]])
+    
+    if update.callback_query:
+        await update.callback_query.edit_message_text(text, parse_mode=ParseMode.MARKDOWN, reply_markup=reply_markup)
+    else:
+        await update.message.reply_text(text, parse_mode=ParseMode.MARKDOWN, reply_markup=reply_markup)
+
+# ===============================================
 # USER HANDLERS
 # ===============================================
 
@@ -916,6 +1094,11 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     session = get_session(user_id)
     user_text = update.message.text.strip()
+    
+    # Handle admin add input
+    if session.state == "waiting_admin_id":
+        await handle_add_admin_input(update, context, user_text)
+        return
     
     # Handle order ID input
     if session.state == "waiting_order_id":
@@ -1156,6 +1339,9 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "admin_chart": admin_chart,
         "admin_monitor": handle_monitor_command,
         "admin_ai_chat": handle_ai_chat,
+        "admin_admins": admin_manage_admins,
+        "admin_add_admin": admin_add_admin_prompt,
+        "admin_remove_list": admin_remove_list,
         "user_track_order": user_track_order,
         "user_products": user_products,
         "user_about": user_about,
@@ -1168,6 +1354,15 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Handle filter callbacks
     if query.data.startswith("filter_"):
         await handle_filter_callback(update, context)
+        return
+    
+    # Handle admin remove callbacks (admin_remove_<user_id>)
+    if query.data.startswith("admin_remove_"):
+        try:
+            admin_id = int(query.data.replace("admin_remove_", ""))
+            await handle_remove_admin(update, context, admin_id)
+        except ValueError:
+            await query.edit_message_text("❌ Invalid admin ID")
         return
     
     handler = callback_map.get(query.data)
@@ -1526,6 +1721,12 @@ async def handle_monitor_command(update: Update, context: ContextTypes.DEFAULT_T
 async def post_init(application: Application):
     """Post-initialization hook to start background tasks."""
     logger.info("Starting background tasks...")
+    
+    # Seed super admins from .env and load full admin list from DB
+    await db.connect()
+    await db.seed_super_admins(ENV_ADMIN_IDS)
+    await refresh_admin_list()
+    
     asyncio.create_task(monitor_website(application))
     asyncio.create_task(daily_report_scheduler(application))
     asyncio.create_task(poll_orders_loop(application))
@@ -1551,6 +1752,7 @@ def main():
     application.add_handler(CommandHandler("orders", admin_orders))
     application.add_handler(CommandHandler("export", admin_export))
     application.add_handler(CommandHandler("search", admin_search))
+    application.add_handler(CommandHandler("admins", admin_manage_admins))
     application.add_handler(CommandHandler("monitor", handle_monitor_command))
     application.add_handler(CommandHandler("products", user_products))
     application.add_handler(CommandHandler("track", user_track_order))

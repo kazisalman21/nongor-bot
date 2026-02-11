@@ -54,6 +54,7 @@ Forget spreadsheets. Ask the Admin AI _"How is business today?"_ and get:
 - **Rate Limiting**: 5-second cooldown per user on AI chat to prevent API abuse.
 - **SSL Encryption**: All database connections use `ssl='require'`.
 - **Admin-Only Access**: Sensitive commands restricted to `ADMIN_USER_IDS`.
+- **Dynamic Admin Management**: Add/remove admins from the bot itself. Super Admins (from `.env`) can never be removed.
 - **Graceful Fallback**: If the primary AI model fails, automatically switches to a reliable fallback.
 
 ---
@@ -138,12 +139,13 @@ This creates:
 - `orders` — Full order management (20+ columns)
 - `products` — Product catalog with stock tracking
 - `coupons` — Discount code system
+- `admins` — Admin management with super admin support
 
 ### 4. Configuration (.env)
 Fill in your credentials in `.env`:
 ```ini
 TELEGRAM_BOT_TOKEN=123456:ABC-DEF...
-ADMIN_USER_IDS=987654321,123456789
+ADMIN_USER_IDS=987654321,123456789  # These become Super Admins (can't be removed)
 GEMINI_API_KEY=AIzaSy...
 DATABASE_URL=postgresql://user:pass@ep-xyz.region.neon.tech/neondb?sslmode=require
 WEBSITE_URL=https://your-website.com
@@ -185,6 +187,7 @@ As an admin, you have a **Senior Manager** at your disposal. Try these prompts:
 | `/search` | Search orders by ID, name, phone, or email |
 | `/export` | Download all orders as CSV (Excel-compatible) |
 | `/products` | View product inventory with low-stock alerts |
+| `/admins` | Manage admins (add/remove/view) |
 | `/monitor` | Check website status (latency + status code) |
 | `/monitor on` | Enable auto-monitoring (every 10 min) |
 | `/monitor off` | Disable auto-monitoring |
@@ -210,6 +213,17 @@ Three concurrent background tasks run automatically:
 | **Website Monitor** | Every 5 min | Alerts admins if website goes down |
 | **Daily Report** | 9:00 PM (BD Time) | Sends automated business performance report |
 | **Order Polling** | Every 60 sec | Notifies admins of new orders in real-time |
+
+### 👥 Admin Management
+Manage who has admin access directly from the bot:
+
+| Action | How |
+| :--- | :--- |
+| **View all admins** | `/admins` or Menu → 👥 Admins |
+| **Add an admin** | Admins → ➕ Add Admin → Enter User ID |
+| **Remove an admin** | Admins → 🗑️ Remove → Select from list |
+
+> **Note**: Admins listed in `ADMIN_USER_IDS` (`.env`) are **Super Admins** 👑 and cannot be removed. All other admins can be added/removed by any existing admin.
 
 ---
 
@@ -250,7 +264,7 @@ nongor_bot_v3/
 │   └── api/
 │       └── analytics.js    # � Vercel API endpoint for Google Analytics 4.
 │
-├── schema.sql              # 🗄️ Full database schema (users, orders, products, coupons).
+├── schema.sql              # 🗄️ Full database schema (users, orders, products, coupons, admins).
 ├── requirements.txt        # 📦 Python dependencies.
 ├── .env.example            # 🔑 Environment variable template.
 ├── Dockerfile              # 🐳 Container config for Fly.io.

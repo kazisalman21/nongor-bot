@@ -744,6 +744,76 @@ class Database:
         return await self.fetch_all(query, [phone])
 
     # =========================================
+    # ADMIN MANAGEMENT
+    # =========================================
+
+    async def seed_super_admins(self, admin_ids):
+        """Insert env-var admin IDs as super admins (idempotent)."""
+        for uid in admin_ids:
+            query = """
+                INSERT INTO admins (user_id, is_super_admin)
+                VALUES ($1, TRUE)
+                ON CONFLICT (user_id)
+                DO UPDATE SET is_super_admin = TRUE
+            """
+            await self.execute(query, [uid])
+        logger.info(f"Seeded {len(admin_ids)} super admin(s)")
+
+    async def get_all_admins(self):
+        """Get all admins with their info."""
+        query = """
+            SELECT 
+                a.user_id,
+                COALESCE(a.username, u.username) as username,
+                COALESCE(a.first_name, u.first_name) as first_name,
+                a.added_by,
+                a.is_super_admin,
+                a.created_at
+            FROM admins a
+            LEFT JOIN users u ON a.user_id = u.user_id
+            ORDER BY a.is_super_admin DESC, a.created_at ASC
+        """
+        return await self.fetch_all(query)
+
+    async def add_admin(self, user_id, added_by, username=None, first_name=None):
+        """Add a new admin. Returns True on success, False if already exists."""
+        check = await self.fetch_one(
+            "SELECT user_id FROM admins WHERE user_id = $1", [user_id]
+        )
+        if check:
+            return False
+        query = """
+            INSERT INTO admins (user_id, username, first_name, added_by)
+            VALUES ($1, $2, $3, $4)
+        """
+        result = await self.execute(query, [user_id, username, first_name, added_by])
+        return result is not None
+
+    async def remove_admin(self, user_id):
+        """Remove an admin. Returns False if user is super admin."""
+        check = await self.fetch_one(
+            "SELECT is_super_admin FROM admins WHERE user_id = $1", [user_id]
+        )
+        if not check:
+            return False
+        if check['is_super_admin']:
+            return False
+        await self.execute("DELETE FROM admins WHERE user_id = $1", [user_id])
+        return True
+
+    async def is_admin(self, user_id):
+        """Check if a user is an admin."""
+        result = await self.fetch_one(
+            "SELECT user_id FROM admins WHERE user_id = $1", [user_id]
+        )
+        return result is not None
+
+    async def get_admin_ids(self):
+        """Get list of all admin user IDs."""
+        rows = await self.fetch_all("SELECT user_id FROM admins")
+        return [r['user_id'] for r in rows] if rows else []
+
+    # =========================================
     # ADMIN UTILITIES
     # =========================================
 
