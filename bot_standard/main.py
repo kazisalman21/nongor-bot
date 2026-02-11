@@ -80,47 +80,13 @@ if AI_AVAILABLE and GEMINI_API_KEY:
         customer_ai = genai.GenerativeModel('gemini-2.5-flash-lite')
         
         # Admin Business Intelligence (Smart & Strategic)
-        admin_ai = genai.GenerativeModel('gemini-2.0-flash-exp') # Using 2.0-flash-exp as 3-preview might not be public yet, or standard 2.0-flash. User asked for 3-flash-preview but safest is 2.0-flash-exp or 1.5-pro-latest. Actually user said "gemini-3-flash-preview". I will try that, if it fails I'll fallback.
-        # WAIT, "gemini-3-flash-preview" might be a typo from user or a very new model. 
-        # The user provided: gemini-3-flash-preview. I will use what they asked.
-        # If it fails, I'll handle it.
-        # User list:
-        # Customer: gemini-2.5-flash-lite
-        # Admin: gemini-3-flash-preview (I'll stick to their request)
-        # Tracking: gemini-flash-lite-latest (likely 1.5-flash-8b or similar, but I'll use literal string)
-        # Fallback: gemini-flash-latest
+        admin_ai = genai.GenerativeModel('gemini-3-flash-preview')
         
-        # Actually, let's look at available models if possible or just trust the user. 
-        # I will use the exact strings user provided.
+        # Order Tracking (Quick Lookups)
+        tracking_ai = genai.GenerativeModel('gemini-flash-lite-latest')
         
-        customer_ai = genai.GenerativeModel('gemini-2.5-flash') # 2.5-flash-lite might not exist yet publicly? User said "gemini-2.5-flash-lite". I'll try. 
-        # Actually 2.0 Flash is current state of art. 
-        # Let's check `test_ai.py` or `list_models.py` if I can? 
-        # No, I should just trust the user or use safe defaults if I suspect.
-        # User said "gemini-2.5-flash-lite". I will use 'gemini-2.0-flash-lite-preview-02-05' or similar if I knew.
-        # But I will use exactly what they wrote.
-        
-        customer_ai = genai.GenerativeModel('gemini-2.0-flash-lite-preview-02-05') # This is the actual name for "2.0 Flash Lite". 
-        # "gemini-2.5-flash-lite" - User probably means 1.5 Flash 8b or 2.0 Flash Lite.
-        # "gemini-3-flash-preview" - User probably means 2.0 Pro or similar.
-        
-        # SAFE BET: 
-        # I will use the established model names mapping to user intent.
-        # Customer: gemini-2.0-flash-lite-preview-02-05
-        # Admin: gemini-2.0-flash-thinking-exp-01-21 (Smartest reasoning)
-        # Tracking: gemini-1.5-flash
-        # Fallback: gemini-1.5-flash
-        
-        # WAIT, user gave SPECIFIC names in the prompt. I should try to honor them but if they are hallucinations, it will crash.
-        # "gemini-2.5-flash-lite" is likely "gemini-2.0-flash-lite-preview-02-05".
-        # "gemini-3-flash-preview" is likely "gemini-2.0-pro-exp-02-05".
-        
-        # Let's implicitly map them to REAL models.
-        
-        customer_ai = genai.GenerativeModel('gemini-2.0-flash-lite-preview-02-05')
-        admin_ai = genai.GenerativeModel('gemini-2.0-pro-exp-02-05')
-        tracking_ai = genai.GenerativeModel('gemini-1.5-flash')
-        fallback_ai = genai.GenerativeModel('gemini-1.5-flash')
+        # Fallback for errors (Most Stable)
+        fallback_ai = genai.GenerativeModel('gemini-flash-latest')
         
         ai_initialized = True
         logger.info("✅ AI System initialized with 4 specialized models (Mapped to v2.0/v1.5)")
