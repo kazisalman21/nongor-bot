@@ -292,6 +292,7 @@ def get_order_filter_menu():
 # COMMAND HANDLERS
 # ===============================================
 
+# Start command with Welcome Image support
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     session = get_session(user.id, user.username, user.first_name)
@@ -321,14 +322,44 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         reply_markup = get_user_menu()
     
+    # Image Path
+    image_path = os.path.join(os.path.dirname(__file__), 'welcome.png')
+    
     try:
-        if update.message:
-            await update.message.reply_text(text, parse_mode=ParseMode.MARKDOWN, reply_markup=reply_markup)
-        elif update.callback_query:
-            await update.callback_query.edit_message_text(text, parse_mode=ParseMode.MARKDOWN, reply_markup=reply_markup)
-    except BadRequest:
+        # Check if image exists
+        if os.path.exists(image_path):
+            if update.message:
+                await update.message.reply_photo(
+                    photo=open(image_path, 'rb'),
+                    caption=text,
+                    parse_mode=ParseMode.MARKDOWN,
+                    reply_markup=reply_markup
+                )
+            elif update.callback_query:
+                # We cannot edit text to photo, so delete old and send new
+                await update.callback_query.message.delete()
+                await context.bot.send_photo(
+                    chat_id=user.id,
+                    photo=open(image_path, 'rb'),
+                    caption=text,
+                    parse_mode=ParseMode.MARKDOWN,
+                    reply_markup=reply_markup
+                )
+        else:
+            # Fallback to text if image missing
+            if update.message:
+                await update.message.reply_text(text, parse_mode=ParseMode.MARKDOWN, reply_markup=reply_markup)
+            elif update.callback_query:
+                await update.callback_query.edit_message_text(text, parse_mode=ParseMode.MARKDOWN, reply_markup=reply_markup)
+                
+    except BadRequest as e:
+        logger.error(f"Error in start command: {e}")
+        # Fallback to text on error
         if update.callback_query:
-            await update.callback_query.message.reply_text(text, parse_mode=ParseMode.MARKDOWN, reply_markup=reply_markup)
+            try:
+                await update.callback_query.message.reply_text(text, parse_mode=ParseMode.MARKDOWN, reply_markup=reply_markup)
+            except:
+                pass
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
