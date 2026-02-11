@@ -27,17 +27,12 @@ class Database:
         """Initialize connection pool"""
         if not self.pool:
             try:
-                # SSL is required for Neon
-                import ssl
-                ctx = ssl.create_default_context()
-                ctx.check_hostname = False
-                ctx.verify_mode = ssl.CERT_NONE
-                
+                # SSL is required for Neon - use 'require' for proper cert validation
                 self.pool = await asyncpg.create_pool(
                     self.connection_string,
                     min_size=1,
                     max_size=5,
-                    ssl=ctx
+                    ssl='require'
                 )
                 logger.info("Database connection pool established.")
             except Exception as e:

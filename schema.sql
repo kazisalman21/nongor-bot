@@ -13,17 +13,58 @@ CREATE TABLE IF NOT EXISTS users (
 -- Orders table (main business data)
 CREATE TABLE IF NOT EXISTS orders (
     id SERIAL PRIMARY KEY,
-    order_id TEXT,  -- Alternative order ID if used
+    order_id TEXT,
     customer_name TEXT,
     phone TEXT,
+    address TEXT,
     product_name TEXT,
     quantity INTEGER DEFAULT 1,
     price DECIMAL(10, 2),
     total_price DECIMAL(10, 2),
-    total DECIMAL(10, 2),
-    status TEXT DEFAULT 'pending',  -- pending, confirmed, delivered, cancelled
+    status TEXT DEFAULT 'Pending',
+    delivery_status TEXT DEFAULT 'Pending',
+    payment_status TEXT DEFAULT 'Unpaid',
+    payment_method TEXT,
+    customer_email TEXT,
+    coupon_code TEXT,
+    discount_amount DECIMAL(10, 2) DEFAULT 0,
+    tracking_token TEXT,
+    trx_id TEXT,
+    sender_number TEXT,
+    delivery_date TEXT,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Products table
+CREATE TABLE IF NOT EXISTS products (
+    id SERIAL PRIMARY KEY,
+    name TEXT NOT NULL,
+    description TEXT,
+    price DECIMAL(10, 2) NOT NULL,
+    stock_quantity INTEGER DEFAULT 0,
+    category_name TEXT DEFAULT 'General',
+    is_featured BOOLEAN DEFAULT FALSE,
+    is_active BOOLEAN DEFAULT TRUE,
+    image TEXT,
+    images TEXT,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Coupons table
+CREATE TABLE IF NOT EXISTS coupons (
+    id SERIAL PRIMARY KEY,
+    code TEXT UNIQUE NOT NULL,
+    discount_type TEXT DEFAULT 'percentage',
+    discount_value DECIMAL(10, 2) NOT NULL,
+    min_order_value DECIMAL(10, 2),
+    max_discount_amount DECIMAL(10, 2),
+    usage_limit INTEGER,
+    usage_count INTEGER DEFAULT 0,
+    is_active BOOLEAN DEFAULT TRUE,
+    expires_at TIMESTAMP,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
 -- Create indexes for better query performance
@@ -31,12 +72,9 @@ CREATE INDEX IF NOT EXISTS idx_orders_phone ON orders(phone);
 CREATE INDEX IF NOT EXISTS idx_orders_status ON orders(status);
 CREATE INDEX IF NOT EXISTS idx_orders_created_at ON orders(created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_orders_product_name ON orders(product_name);
+CREATE INDEX IF NOT EXISTS idx_orders_order_id ON orders(order_id);
+CREATE INDEX IF NOT EXISTS idx_orders_delivery_status ON orders(delivery_status);
 CREATE INDEX IF NOT EXISTS idx_users_last_seen ON users(last_seen DESC);
-
--- Sample data (optional - for testing)
-INSERT INTO orders (customer_name, phone, product_name, quantity, price, total, status)
-VALUES 
-    ('Test Customer 1', '01711222333', 'Premium T-Shirt', 2, 500, 1000, 'delivered'),
-    ('Test Customer 2', '01811333444', 'Denim Jeans', 1, 1500, 1500, 'confirmed'),
-    ('Test Customer 3', '01911444555', 'Cotton Hoodie', 1, 1200, 1200, 'pending')
-ON CONFLICT DO NOTHING;
+CREATE INDEX IF NOT EXISTS idx_products_active ON products(is_active);
+CREATE INDEX IF NOT EXISTS idx_products_category ON products(category_name);
+CREATE INDEX IF NOT EXISTS idx_coupons_code ON coupons(code);

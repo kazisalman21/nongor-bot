@@ -52,10 +52,10 @@ ADMIN_USER_IDS = [
 ]
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
-DATABASE_URL = os.getenv("NETLIFY_DATABASE_URL")
+DATABASE_URL = os.getenv("DATABASE_URL") or os.getenv("NETLIFY_DATABASE_URL")
 
 if not DATABASE_URL:
-    logger.error("NETLIFY_DATABASE_URL is missing in .env!")
+    logger.error("DATABASE_URL (or NETLIFY_DATABASE_URL) is missing in .env!")
     sys.exit(1)
 
 if not TELEGRAM_BOT_TOKEN:
@@ -131,11 +131,10 @@ CONTACT_INFO = {
 BUSINESS_HOURS = {
     "weekdays": {"days": "Everyday", "hours": "10:00 AM - 10:00 PM"},
     "friday": {"days": "Friday", "hours": "Open"},
-    "response_times": {"messenger": "~2 minutes", "email": "Within 24 hours"}
+    "response_times": {"whatsapp": "~5 minutes", "messenger": "~2 minutes", "email": "Within 24 hours"}
 }
 
 import httpx
-from telegram.ext import JobQueue
 
 DELIVERY_POLICIES = {
     "dhaka": {"time": "2-3 days", "charge": 70, "free_above": 1000},
@@ -157,7 +156,15 @@ class UserSession:
         self.role = "admin" if user_id in ADMIN_USER_IDS else "user"
         self.state = "menu"
         self.last_activity = datetime.now()
+        self.last_ai_request = None  # Rate limiting
         self.temp_data = {}
+
+    def can_use_ai(self, cooldown_seconds=5):
+        """Check if user has waited long enough between AI requests."""
+        now = datetime.now()
+        if self.last_ai_request is None:
+            return True
+        return (now - self.last_ai_request).total_seconds() >= cooldown_seconds
 
 user_sessions = {}
 
@@ -181,7 +188,7 @@ AI_CUSTOMER_PROMPT = f"""You are 'Nongor AI', the Lead Sales Manager for Nongor 
 Your goal is to DRIVE SALES while maintaining 100% adherence to company policies.
 
 BACKGROUND INFO (STRICT RULES):
-{{KNOWLEDGE_BASE}}
+{KNOWLEDGE_BASE}
 
 SALES STRATEGY:
 1. **Consultative Selling**: Don't just answer; ask questions to understand their needs. (e.g., "Are you buying this for a special occasion?")
@@ -217,7 +224,7 @@ GUIDELINES:
 # ===============================================
 
 def get_admin_menu():
-    return InlineKeyboardMarkup([
+    rows = [
         [InlineKeyboardButton("&#128202; Dashboard", callback_data="admin_dashboard"),
          InlineKeyboardButton("&#128200; Analytics", callback_data="admin_analytics")],
         [InlineKeyboardButton("&#128230; Orders", callback_data="admin_orders"),
@@ -226,9 +233,11 @@ def get_admin_menu():
          InlineKeyboardButton("&#127903;&#65039; Coupons", callback_data="admin_coupons")],
         [InlineKeyboardButton("&#128228; Export CSV", callback_data="admin_export"),
          InlineKeyboardButton("&#128202; Sales Chart", callback_data="admin_chart")],
-        [InlineKeyboardButton("&#129302; AI Assistant", callback_data="admin_ai_chat") if ai_initialized else None],
-        [InlineKeyboardButton("&#9664;&#65039; Refresh", callback_data="back_menu")]
-    ])
+    ]
+    if ai_initialized:
+        rows.append([InlineKeyboardButton("&#129302; AI Assistant", callback_data="admin_ai_chat")])
+    rows.append([InlineKeyboardButton("&#9664;&#65039; Refresh", callback_data="back_menu")])
+    return InlineKeyboardMarkup(rows)
 
 def get_user_menu():
     buttons = [
@@ -307,17 +316,20 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         text = """&#128218; **ADMIN COMMANDS**
 
 /start - Main menu
+/menu - Return to menu
 /dashboard - Quick stats
 /orders - Recent orders
 /export - Export CSV
 /search - Search orders
 /products - Product list
+/monitor - Website status
 /help - This help message
 """
     else:
         text = """&#128218; **AVAILABLE COMMANDS**
 
 /start - Main menu
+/menu - Return to menu
 /track - Track your order
 /products - Browse products
 /about - About Nongor
@@ -755,24 +767,25 @@ async def user_about(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(text, parse_mode=ParseMode.MARKDOWN, reply_markup=reply_markup)
 
 async def user_contact(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    text = f"""&#128241; **CONTACT US**
-
-**Get in Touch:**
-
-&#128222; Phone: {CONTACT_INFO['phone']}
-&#128172; WhatsApp: {CONTACT_INFO['whatsapp']}
-&#128231; Email: {CONTACT_INFO['email']}
-&#127760; Website: {CONTACT_INFO['website']}
-&#128216; Facebook: {CONTACT_INFO['facebook']}
-
-**Business Hours:**
-{BUSINESS_HOURS['weekdays']['days']}: {BUSINESS_HOURS['weekdays']['hours']}
-{BUSINESS_HOURS['friday']['days']}: {BUSINESS_HOURS['friday']['hours']}
-
-**Response Times:**
-WhatsApp: {BUSINESS_HOURS['response_times']['whatsapp']}
-Email: {BUSINESS_HOURS['response_times']['email']}
-"""
+    contact_lines = ["&#128241; **CONTACT US**\n", "**Get in Touch:**\n"]
+    
+    if CONTACT_INFO.get('phone'):
+        contact_lines.append(f"&#128222; Phone: {CONTACT_INFO['phone']}")
+    if CONTACT_INFO.get('whatsapp'):
+        contact_lines.append(f"&#128172; WhatsApp: {CONTACT_INFO['whatsapp']}")
+    contact_lines.append(f"&#128231; Email: {CONTACT_INFO['email']}")
+    contact_lines.append(f"&#127760; Website: {CONTACT_INFO['website']}")
+    contact_lines.append(f"&#128216; Facebook: {CONTACT_INFO['facebook']}")
+    contact_lines.append(f"\n**Business Hours:**")
+    contact_lines.append(f"{BUSINESS_HOURS['weekdays']['days']}: {BUSINESS_HOURS['weekdays']['hours']}")
+    contact_lines.append(f"{BUSINESS_HOURS['friday']['days']}: {BUSINESS_HOURS['friday']['hours']}")
+    contact_lines.append(f"\n**Response Times:**")
+    if CONTACT_INFO.get('whatsapp'):
+        contact_lines.append(f"WhatsApp: {BUSINESS_HOURS['response_times'].get('whatsapp', 'Available')}")
+    contact_lines.append(f"Messenger: {BUSINESS_HOURS['response_times']['messenger']}")
+    contact_lines.append(f"Email: {BUSINESS_HOURS['response_times']['email']}")
+    
+    text = "\n".join(contact_lines)
     
     reply_markup = get_back_button()
     
@@ -795,9 +808,9 @@ async def user_policies(update: Update, context: ContextTypes.DEFAULT_TYPE):
 &#8226; Bank Transfer
 
 **&#128260; Returns:**
-&#8226; 7-day return policy
-&#8226; Items must be unused and in original packaging
-&#8226; Return shipping charges may apply
+&#8226; 3-day return reporting window
+&#8226; Items must be unused, unwashed, and in original packaging with tags
+&#8226; Return shipping charges may apply (free if our error)
 
 **&#128274; Privacy:**
 &#8226; Your information is secure
@@ -824,7 +837,12 @@ async def user_search(update: Update, context: ContextTypes.DEFAULT_TYPE):
     session = get_session(user_id)
     session.state = "waiting_user_search"
     text = "&#128269; **SEARCH PRODUCTS**\n\nWhat are you looking for today?\n(e.g., 'Blue Panjabi', 'Silk', 'Festive')"
-    await update.message.reply_text(text, parse_mode=ParseMode.MARKDOWN, reply_markup=get_back_button())
+    reply_markup = get_back_button()
+    
+    if update.callback_query:
+        await update.callback_query.edit_message_text(text, parse_mode=ParseMode.MARKDOWN, reply_markup=reply_markup)
+    else:
+        await update.message.reply_text(text, parse_mode=ParseMode.MARKDOWN, reply_markup=reply_markup)
 
 async def handle_user_search_query(update: Update, context: ContextTypes.DEFAULT_TYPE, search_term):
     try:
@@ -1030,6 +1048,12 @@ async def handle_ai_message(update: Update, context: ContextTypes.DEFAULT_TYPE, 
     
     session = get_session(update.effective_user.id)
     
+    # Rate limiting: 5-second cooldown per user
+    if not session.can_use_ai(cooldown_seconds=5):
+        await update.message.reply_text("&#9203; Please wait a moment before sending another request.", reply_markup=get_back_button())
+        return
+    session.last_ai_request = datetime.now()
+    
     try:
         # Build context
         if session.role == "admin":
@@ -1102,7 +1126,7 @@ Response:"""
 
         # Limit response length
         if len(ai_text) > 4000: # Telegram limit is 4096
-            ai_text = ai_text[:800] + "..."
+            ai_text = ai_text[:3800] + "\n\n_...response trimmed_"
         
         await update.message.reply_text(ai_text, reply_markup=get_back_button())
         

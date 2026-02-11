@@ -16,9 +16,9 @@ async def test_analytics():
     load_dotenv()
     
     # Connection string
-    db_url = os.getenv("NETLIFY_DATABASE_URL")
+    db_url = os.getenv("DATABASE_URL") or os.getenv("NETLIFY_DATABASE_URL")
     if not db_url:
-        print("❌ ERROR: NETLIFY_DATABASE_URL not found in .env")
+        print("❌ ERROR: DATABASE_URL (or NETLIFY_DATABASE_URL) not found in .env")
         return
 
     # Initialize DB
