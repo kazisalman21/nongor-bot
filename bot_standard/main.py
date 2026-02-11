@@ -77,22 +77,24 @@ if AI_AVAILABLE and GEMINI_API_KEY:
         logger.error(f"AI initialization failed: {e}")
 
 CONTACT_INFO = {
-    'whatsapp': '+880 1616-510037',
     'website': 'https://nongor-brand.vercel.app',
     'facebook': 'https://www.facebook.com/profile.php?id=61582283911710',
+    'messenger': 'https://m.me/857107060814707',
     'email': 'nongorr.anika@gmail.com',
-    'phone': '+880 1616-510037'
+    # Phone/Whatsapp removed as they are not on the website
+    'phone': None, 
+    'whatsapp': None
 }
 
 BUSINESS_HOURS = {
-    "weekdays": {"days": "Saturday - Thursday", "hours": "10:00 AM - 8:00 PM"},
-    "friday": {"days": "Friday", "hours": "Closed"},
-    "response_times": {"whatsapp": "5-10 minutes", "email": "24 hours"}
+    "weekdays": {"days": "Everyday", "hours": "10:00 AM - 10:00 PM"},
+    "friday": {"days": "Friday", "hours": "Open"},
+    "response_times": {"messenger": "~2 minutes", "email": "Within 24 hours"}
 }
 
 DELIVERY_POLICIES = {
-    "dhaka": {"time": "1-2 days", "charge": 60, "free_above": 1000},
-    "outside": {"time": "3-5 days", "charge": 120, "free_above": 2000}
+    "dhaka": {"time": "2-3 days", "charge": 70, "free_above": 1000},
+    "outside": {"time": "3-5 days", "charge": 130, "free_above": 2000}
 }
 
 # ===============================================
