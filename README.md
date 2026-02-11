@@ -1,9 +1,8 @@
-# 🚢 Nongor Premium Bot v4.0 (AI-Powered)
-
 <div align="center">
   <img src="bot_standard/bot.png" width="200" />
   <h1>EIKTA</h1>
   <p><strong>Eikta is a Telegram bot for Nongor</strong></p>
+  <p>Nongor Premium Bot v4.0 (AI-Powered)</p>
 </div>
 
 ![Nongor Bot Banner](https://img.shields.io/badge/Nongor-Premium_Bot-2CA5E0?style=for-the-badge&logo=probot&logoColor=white)
