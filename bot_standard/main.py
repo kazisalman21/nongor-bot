@@ -68,28 +68,36 @@ db = Database(DATABASE_URL)
 # Initialize AI Models (Multi-Model Strategy)
 ai_initialized = False
 customer_ai = None
+search_ai = None
 admin_ai = None
 tracking_ai = None
+report_ai = None
 fallback_ai = None
 
 if AI_AVAILABLE and GEMINI_API_KEY:
     try:
         genai.configure(api_key=GEMINI_API_KEY)
         
-        # Customer-facing AI (Fast & Cheap)
-        customer_ai = genai.GenerativeModel('gemini-2.5-flash-lite')
+        # 1. Customer AI (Exp v2.0) - General Chat
+        customer_ai = genai.GenerativeModel('gemini-2.0-flash-exp')
         
-        # Admin Business Intelligence (Smart & Strategic)
-        admin_ai = genai.GenerativeModel('gemini-3-flash-preview')
+        # 2. Product Search (Lite v2.5) - Intelligent Discovery
+        search_ai = genai.GenerativeModel('gemini-2.5-flash-lite')
         
-        # Order Tracking (Quick Lookups)
-        tracking_ai = genai.GenerativeModel('gemini-flash-lite-latest')
+        # 3. Order Tracking (Pro v2.0) - Strategic Analysis
+        tracking_ai = genai.GenerativeModel('gemini-2.0-pro-exp')
         
-        # Fallback for errors (Most Stable)
-        fallback_ai = genai.GenerativeModel('gemini-flash-latest')
+        # 4. Daily Reports (Preview v3.0) - Deep Insights
+        report_ai = genai.GenerativeModel('gemini-3-flash-preview')
+        
+        # 5. Admin AI (Stable) - Business Manager
+        admin_ai = genai.GenerativeModel('gemini-flash-latest')
+        
+        # Fallback (Most Reliable)
+        fallback_ai = genai.GenerativeModel('gemini-1.5-flash')
         
         ai_initialized = True
-        logger.info("&#9989; AI System initialized with 4 specialized models (Mapped to v2.0/v1.5)")
+        logger.info("&#9989; AI System initialized with 5 specialized models (Multi-Model Strategy)")
         
     except Exception as e:
         logger.error(f"AI initialization failed: {e}")
@@ -102,11 +110,13 @@ def get_ai_model(context_type: str):
     """
     models = {
         "customer": customer_ai,
+        "search": search_ai,
         "admin": admin_ai,
         "tracking": tracking_ai,
+        "report": report_ai,
         "fallback": fallback_ai
     }
-    return models.get(context_type, fallback_ai)
+    return models.get(context_type, fallback_ai) or fallback_ai
 
 CONTACT_INFO = {
     'website': 'https://nongor-brand.vercel.app',
@@ -692,9 +702,9 @@ async def user_products(update: Update, context: ContextTypes.DEFAULT_TYPE):
         else:
             text += "No products available at the moment.\n"
 
-        # USE CUSTOMER AI FOR RECOMMENDATION
+        # USE SEARCH AI FOR RECOMMENDATION
         try:
-            model = get_ai_model("customer")
+            model = get_ai_model("search")
             ai_prompt = "TASK: Give a very short (20 words), premium fashion tip or recommendation for a customer browsing our traditional collection."
             ai_response = model.generate_content(ai_prompt)
             tip = ai_response.text.strip()
@@ -833,9 +843,9 @@ async def handle_user_search_query(update: Update, context: ContextTypes.DEFAULT
             text += f"&#128176; &#2547;{p['price']:,.0f} &#8226; {stock_text}\n"
             text += f"&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;\n"
             
-        # USE CUSTOMER AI FOR FASHION INSIGHT
+        # USE SEARCH AI FOR FASHION INSIGHT
         try:
-            model = get_ai_model("customer")
+            model = get_ai_model("search")
             ai_prompt = f"TASK: Act as a premium fashion consultant. A customer is searching for '{search_term}'. Give 1 sentence of expert advice based on Nongor's traditional premium brand (max 15 words)."
             ai_response = model.generate_content(ai_prompt)
             insight = ai_response.text.strip()
@@ -1304,9 +1314,9 @@ async def send_daily_report(app: Application):
             for i, p in enumerate(top_products, 1):
                 report_text += f"{i}. {p['product_name']}: &#2547;{p.get('revenue', 0):,.0f}\n"
         
-        # USE ADMIN AI FOR STRATEGIC INSIGHT
+        # USE REPORT AI FOR STRATEGIC INSIGHT
         try:
-            model = get_ai_model("admin")
+            model = get_ai_model("report")
             ai_prompt = f"""
             TASK: Analyze this daily business performance and provide ONE short, elite strategic insight.
             Revenue: &#2547;{today.get('total_revenue')}
