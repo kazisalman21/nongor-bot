@@ -741,7 +741,12 @@ async def admin_manage_admins(update: Update, context: ContextTypes.DEFAULT_TYPE
         reply_markup = InlineKeyboardMarkup(rows)
         
         if update.callback_query:
-            await update.callback_query.edit_message_text(text, parse_mode=ParseMode.MARKDOWN, reply_markup=reply_markup)
+            try:
+                await update.callback_query.edit_message_text(text, parse_mode=ParseMode.MARKDOWN, reply_markup=reply_markup)
+            except BadRequest as e:
+                # Ignore if message is not modified
+                if "Message is not modified" not in str(e):
+                    raise e
         else:
             await update.message.reply_text(text, parse_mode=ParseMode.MARKDOWN, reply_markup=reply_markup)
     
