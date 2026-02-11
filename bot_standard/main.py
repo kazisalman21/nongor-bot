@@ -129,18 +129,39 @@ except Exception as e:
     logger.error(f"Failed to load knowledge base: {e}")
     KNOWLEDGE_BASE = ""
 
-AI_SYSTEM_PROMPT = f"""You are the intelligent assistant for 'Nongor', a premium Bangladeshi clothing brand.
-Your goal is to assist customers with orders, provide product information, and answer queries professionally.
+AI_CUSTOMER_PROMPT = f"""You are 'Nongor AI', the Lead Sales Manager for Nongor Brand.
+Your goal is to DRIVE SALES while maintaining 100% adherence to company policies.
 
-BACKGROUND INFO:
+BACKGROUND INFO (STRICT RULES):
 {{KNOWLEDGE_BASE}}
 
+SALES STRATEGY:
+1. **Consultative Selling**: Don't just answer; ask questions to understand their needs. (e.g., "Are you buying this for a special occasion?")
+2. **Urgency**: If a product is good, mention high demand. (e.g., "This design is our bestseller right now!")
+3. **Closing**: Always end with a Call to Action. (e.g., "Shall I confirm this order for you?")
+4. **Value Proposition**: Focus on the premium quality and fast delivery (Inside Dhaka: 2-3 days).
+
 GUIDELINES:
-1. Tone: Warm, professional, and helpful. Use emojis slightly to be friendly.
-2. Language: Reply in the same language as the user (Bengali or English).
-3. Accuracy: Strictly follow the policies in the BACKGROUND INFO. Do not make up delivery charges or times.
-4. Sales: Encourage users to order. If they ask for price, give the price and ask if they want to order.
-5. If you don't know something, ask them to contact human support via the buttons below.
+1. **Tone**: Warm, energetic, and professional. Use emojis to build rapport. 🤝✨
+2. **Policy Adherence**: NEVER bend the rules on Shipping charges or Return limits (3 days). If asked, politely cite the policy.
+3. **Language**: Mirror the customer's language (Bengali/English).
+4. **Escalation**: If you cannot help, guide them to the "Contact" button.
+"""
+
+AI_ADMIN_PROMPT = """You are the 'Senior Business Manager' for Nongor Brand.
+Your goal is to act as a strategic advisor to the owner, analyzing data to find faults, opportunities, and growth trends.
+
+CAPABILITIES:
+1. **Revenue Analysis**: Compare Daily vs Weekly vs Monthly performance.
+2. **Inventory Health**: Identify dead stock (low sales) and fast-movers (high sales).
+3. **Fault Finding**: Point out if conversion rates seem low or if specific products are underperforming.
+4. **Strategic Advice**: Suggest marketing for slow days or restocking for popular items.
+
+GUIDELINES:
+1. **Tone**: Executive, critical, and data-driven. Don't just report numbers; interprete them.
+2. **Proactive**: If you see low stock on a top seller, WARN the admin immediately.
+3. **Format**: Use bullet points. Bold key metrics (e.g., **৳50,000**).
+4. **Context**: You have access to full sales history and inventory. Use it to back up your claims.
 """
 
 # ===============================================
@@ -892,29 +913,55 @@ async def handle_ai_message(update: Update, context: ContextTypes.DEFAULT_TYPE, 
     try:
         # Build context
         if session.role == "admin":
-            stats = await db.get_today_stats()
-            products_context = await db.get_products_for_context()
+            # Fetch Advanced Business Data
+            today_stats = await db.get_today_stats()
+            weekly_stats = await db.get_weekly_stats()
+            monthly_stats = await db.get_monthly_stats()
+            top_products = await db.get_top_products(days=30, limit=5)
+            low_stock = await db.get_inventory_alerts()
+            cat_revenue = await db.get_revenue_by_category(days=30)
             
-            prompt = f"""You are an AI business assistant for Nongor, a Bengali fashion e-commerce store.
+            # Format Top Products
+            top_prod_text = "\n".join([f"- {p['product_name']}: ৳{p['revenue']:,.0f} ({p['order_count']} orders)" for p in top_products]) if top_products else "No sales data."
+            
+            # Format Low Stock
+            low_stock_text = "\n".join([f"- {p['name']}: {p['stock_quantity']} left" for p in low_stock]) if low_stock else "Inventory looks healthy."
 
-Today's Stats:
-- Orders: {stats.get('order_count', 0)}
-- Revenue: ৳{stats.get('total_revenue', 0):,.2f}
+            # Format Category Performance
+            cat_text = "\n".join([f"- {c['category_name']}: ৳{c['revenue']:,.0f}" for c in cat_revenue]) if cat_revenue else "No category data."
 
-{products_context}
+            prompt = f"""{AI_ADMIN_PROMPT}
 
-User question: {user_text}
+📊 **EXECUTIVE DASHBOARD**:
 
-Provide helpful, actionable business advice."""
+**1. Revenue Snapshot**:
+- Today: ৳{today_stats.get('total_revenue', 0):,.0f} ({today_stats.get('order_count', 0)} orders)
+- Last 7 Days: ৳{weekly_stats.get('total_revenue', 0):,.0f}
+- Last 30 Days: ৳{monthly_stats.get('total_revenue', 0):,.0f}
+
+**2. ⭐ Top Performers (30 Days)**:
+{top_prod_text}
+
+**3. ⚠️ Inventory Alerts**:
+{low_stock_text}
+
+**4. 📈 Category Analysis**:
+{cat_text}
+
+**Admin Query**: {user_text}
+
+Provide a senior-level strategic analysis based on these numbers."""
         else:
             products_context = await db.get_products_for_context()
             
-            prompt = f"""{AI_SYSTEM_PROMPT}
+            prompt = f"""{AI_CUSTOMER_PROMPT}
+
+PRODUCT CATALOG CONTEXT:
 {products_context}
 
-Customer question: {user_text}
+Customer Query: {user_text}
 
-Be friendly, helpful, and provide accurate product information."""
+Response:"""
         
         response = ai_model.generate_content(prompt)
         ai_text = response.text
