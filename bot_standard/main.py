@@ -120,6 +120,29 @@ def get_session(user_id, username=None, first_name=None):
     session.last_activity = datetime.now()
     return session
 
+# Load Knowledge Base
+try:
+    with open('bot_standard/knowledge_base.md', 'r', encoding='utf-8') as f:
+        KNOWLEDGE_BASE = f.read()
+    logger.info("Knowledge base loaded successfully.")
+except Exception as e:
+    logger.error(f"Failed to load knowledge base: {e}")
+    KNOWLEDGE_BASE = ""
+
+AI_SYSTEM_PROMPT = f"""You are the intelligent assistant for 'Nongor', a premium Bangladeshi clothing brand.
+Your goal is to assist customers with orders, provide product information, and answer queries professionally.
+
+BACKGROUND INFO:
+{{KNOWLEDGE_BASE}}
+
+GUIDELINES:
+1. Tone: Warm, professional, and helpful. Use emojis slightly to be friendly.
+2. Language: Reply in the same language as the user (Bengali or English).
+3. Accuracy: Strictly follow the policies in the BACKGROUND INFO. Do not make up delivery charges or times.
+4. Sales: Encourage users to order. If they ask for price, give the price and ask if they want to order.
+5. If you don't know something, ask them to contact human support via the buttons below.
+"""
+
 # ===============================================
 # KEYBOARDS
 # ===============================================
@@ -886,8 +909,7 @@ Provide helpful, actionable business advice."""
         else:
             products_context = await db.get_products_for_context()
             
-            prompt = f"""You are a helpful shopping assistant for Nongor, a Bengali fashion store.
-
+            prompt = f"""{AI_SYSTEM_PROMPT}
 {products_context}
 
 Customer question: {user_text}
